@@ -1,0 +1,477 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/cache-router/cache-decision-event.schema.json",
+  "title": "Cache Router Decision Event",
+  "description": "One redacted cache-aware router decision event. This schema is for future mocked traces and prototypes; it must not contain raw prompt text, raw tenant identifiers, secrets, or cache blob paths.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "trace_id",
+    "request_id",
+    "request_hash",
+    "timestamp",
+    "phase",
+    "decision",
+    "tenant_hash",
+    "conversation_hash",
+    "scope",
+    "model_id",
+    "worker_id",
+    "cache_key_hash",
+    "manifest_id",
+    "cache_hit_level",
+    "compatibility_result",
+    "validation_status",
+    "fallback_required",
+    "fallback_reason",
+    "latency_ms",
+    "metrics",
+    "policy",
+    "privacy"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "2026-06-30.1"
+    },
+    "event_id": {
+      "$ref": "#/$defs/id_string"
+    },
+    "trace_id": {
+      "$ref": "#/$defs/id_string"
+    },
+    "request_id": {
+      "$ref": "#/$defs/id_string"
+    },
+    "request_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "request_received",
+        "fingerprint_requested",
+        "fingerprint_received",
+        "registry_lookup",
+        "worker_ranked",
+        "worker_selected",
+        "hydrate_requested",
+        "restore_requested",
+        "restore_validated",
+        "cold_prefill_selected",
+        "generation_started",
+        "cache_commit_requested",
+        "cache_commit_published",
+        "request_completed",
+        "request_failed"
+      ]
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "hot_local_hit",
+        "durable_hit_hydrate",
+        "cold_prefill",
+        "restore_then_generate",
+        "fallback_after_restore_failure",
+        "reject_policy",
+        "reject_capacity",
+        "no_op"
+      ]
+    },
+    "tenant_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "conversation_hash": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256_hex"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "global_system",
+        "tenant",
+        "conversation",
+        "private_disabled"
+      ]
+    },
+    "model_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "worker_id": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/id_string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cache_key_hash": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256_hex"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "manifest_id": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/id_string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cache_hit_level": {
+      "type": "string",
+      "enum": [
+        "none",
+        "local_nvme",
+        "durable_blob",
+        "registry_only",
+        "unknown"
+      ]
+    },
+    "compatibility_result": {
+      "type": "string",
+      "enum": [
+        "match",
+        "miss",
+        "mismatch",
+        "policy_denied",
+        "unknown",
+        "not_checked"
+      ]
+    },
+    "validation_status": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "validated",
+            "quarantined",
+            "corrupt",
+            "expired",
+            "not_applicable",
+            "not_checked"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fallback_required": {
+      "type": "boolean"
+    },
+    "fallback_reason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "no_compatible_manifest",
+            "policy_denied",
+            "worker_capacity",
+            "hydration_failed",
+            "restore_validation_failed",
+            "manifest_quarantined",
+            "cache_key_mismatch",
+            "tenant_scope_mismatch",
+            "none"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "latency_ms": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_latency_ms",
+        "registry_lookup_latency_ms",
+        "hydration_latency_ms",
+        "restore_latency_ms",
+        "ttft_ms",
+        "prompt_tokens",
+        "cached_tokens",
+        "processed_prompt_tokens",
+        "generated_tokens",
+        "prompt_tps",
+        "eval_tps",
+        "reuse_ratio",
+        "full_reprocess_suspected",
+        "cache_event_basis",
+        "restore_observed_basis"
+      ],
+      "properties": {
+        "decision_latency_ms": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "registry_lookup_latency_ms": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "hydration_latency_ms": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "restore_latency_ms": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "ttft_ms": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "prompt_tokens": {
+          "$ref": "#/$defs/nullable_non_negative_integer"
+        },
+        "cached_tokens": {
+          "$ref": "#/$defs/nullable_non_negative_integer"
+        },
+        "processed_prompt_tokens": {
+          "$ref": "#/$defs/nullable_non_negative_integer"
+        },
+        "generated_tokens": {
+          "$ref": "#/$defs/nullable_non_negative_integer"
+        },
+        "prompt_tps": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "eval_tps": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "reuse_ratio": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "full_reprocess_suspected": {
+          "type": "string",
+          "enum": [
+            "yes",
+            "no",
+            "not_interpreted",
+            "not_captured"
+          ]
+        },
+        "cache_event_basis": {
+          "$ref": "#/$defs/basis_string"
+        },
+        "restore_observed_basis": {
+          "$ref": "#/$defs/basis_string"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope_allowed",
+        "persistence_allowed",
+        "cross_tenant_reuse_allowed",
+        "global_system_allowlisted",
+        "policy_id_hash",
+        "policy_basis"
+      ],
+      "properties": {
+        "scope_allowed": {
+          "type": "boolean"
+        },
+        "persistence_allowed": {
+          "type": "boolean"
+        },
+        "cross_tenant_reuse_allowed": {
+          "type": "boolean",
+          "const": false
+        },
+        "global_system_allowlisted": {
+          "type": "boolean"
+        },
+        "policy_id_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256_hex"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy_basis": {
+          "$ref": "#/$defs/basis_string"
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw_prompt_logged",
+        "raw_tenant_id_logged",
+        "raw_conversation_id_logged",
+        "raw_cache_blob_path_logged",
+        "raw_environment_logged",
+        "contains_secret_material",
+        "redaction_status"
+      ],
+      "properties": {
+        "raw_prompt_logged": {
+          "type": "boolean",
+          "const": false
+        },
+        "raw_tenant_id_logged": {
+          "type": "boolean",
+          "const": false
+        },
+        "raw_conversation_id_logged": {
+          "type": "boolean",
+          "const": false
+        },
+        "raw_cache_blob_path_logged": {
+          "type": "boolean",
+          "const": false
+        },
+        "raw_environment_logged": {
+          "type": "boolean",
+          "const": false
+        },
+        "contains_secret_material": {
+          "type": "boolean",
+          "const": false
+        },
+        "redaction_status": {
+          "type": "string",
+          "enum": [
+            "redacted",
+            "hashes_only",
+            "synthetic_example"
+          ]
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 300
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "fallback_required": {
+            "const": true
+          }
+        },
+        "required": [
+          "fallback_required"
+        ]
+      },
+      "then": {
+        "properties": {
+          "fallback_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fallback_reason"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "id_string": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "enum": [
+          "unknown",
+          "not_captured",
+          "not_interpreted"
+        ]
+      }
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "nullable_non_negative_number": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullable_non_negative_integer": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "basis_string": {
+      "type": "string",
+      "enum": [
+        "request_metadata",
+        "worker_fingerprint",
+        "registry_lookup",
+        "sidecar_inventory",
+        "validation_result",
+        "metrics_delta",
+        "slot_state",
+        "server_log_marker",
+        "policy_rule",
+        "synthetic_example",
+        "not_captured",
+        "not_checked",
+        "not_interpreted"
+      ]
+    }
+  }
+}

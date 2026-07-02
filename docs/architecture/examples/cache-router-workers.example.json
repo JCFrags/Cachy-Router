@@ -1,0 +1,27 @@
+{
+  "schema_version": "2026-07-01.1",
+  "workers": [
+    {
+      "worker_id": "worker-a",
+      "ssh_host": "<worker-a-ssh-alias>",
+      "worker_url": "http://<worker-a-lan-ip>:18082",
+      "slot_save_path": "/home/<user>/.cache/cachy-router/workers/worker-a/slots",
+      "slot_id": 0,
+      "transport": {
+        "kind": "http",
+        "sidecar_url": "http://<worker-a-lan-ip>:18083"
+      }
+    },
+    {
+      "worker_id": "worker-b",
+      "ssh_host": "<worker-b-ssh-alias>",
+      "worker_url": "http://<worker-b-lan-ip>:18082",
+      "slot_save_path": "/home/<user>/.cache/cachy-router/workers/worker-b/slots",
+      "slot_id": 0,
+      "transport": {
+        "kind": "http",
+        "sidecar_url": "http://<worker-b-lan-ip>:18083"
+      }
+    }
+  ]
+}

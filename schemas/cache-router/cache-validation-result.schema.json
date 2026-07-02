@@ -1,0 +1,396 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/cache-router/cache-validation-result.schema.json",
+  "title": "Cache Router Validation Result",
+  "description": "Validation result for a future cache restore or cache artifact. Failed validation must require fallback or explicitly explain why fallback is not needed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "validation_id",
+    "trace_id",
+    "timestamp",
+    "manifest_id",
+    "worker_id",
+    "validation_type",
+    "status",
+    "cache_key_hash",
+    "compatibility_result",
+    "blob_hash",
+    "n_tokens",
+    "checks",
+    "tolerance",
+    "metrics",
+    "failure_reason",
+    "fallback_not_required_reason",
+    "quarantine_recommended",
+    "fallback_required",
+    "security_signal"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "2026-06-30.1"
+    },
+    "validation_id": {
+      "$ref": "#/$defs/id_string"
+    },
+    "trace_id": {
+      "$ref": "#/$defs/id_string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "manifest_id": {
+      "$ref": "#/$defs/id_string"
+    },
+    "worker_id": {
+      "$ref": "#/$defs/id_string"
+    },
+    "validation_type": {
+      "type": "string",
+      "enum": [
+        "manifest_schema",
+        "blob_checksum",
+        "blob_size",
+        "restore_api",
+        "next_token_logits",
+        "top_k_distribution",
+        "deterministic_text",
+        "mtp_restore",
+        "tenant_policy",
+        "cache_poisoning_negative_test"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "error",
+        "skipped"
+      ]
+    },
+    "cache_key_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "compatibility_result": {
+      "type": "string",
+      "enum": [
+        "match",
+        "miss",
+        "mismatch",
+        "policy_denied",
+        "unknown",
+        "not_checked"
+      ]
+    },
+    "blob_hash": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256_hex"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "n_tokens": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_schema_valid",
+        "cache_key_match",
+        "checksum_match",
+        "blob_size_match",
+        "restore_api_success",
+        "logits_match",
+        "top_k_match",
+        "deterministic_text_match",
+        "tenant_policy_match",
+        "poisoning_negative_test_passed"
+      ],
+      "properties": {
+        "manifest_schema_valid": {
+          "$ref": "#/$defs/check_status"
+        },
+        "cache_key_match": {
+          "$ref": "#/$defs/check_status"
+        },
+        "checksum_match": {
+          "$ref": "#/$defs/check_status"
+        },
+        "blob_size_match": {
+          "$ref": "#/$defs/check_status"
+        },
+        "restore_api_success": {
+          "$ref": "#/$defs/check_status"
+        },
+        "logits_match": {
+          "$ref": "#/$defs/check_status"
+        },
+        "top_k_match": {
+          "$ref": "#/$defs/check_status"
+        },
+        "deterministic_text_match": {
+          "$ref": "#/$defs/check_status"
+        },
+        "tenant_policy_match": {
+          "$ref": "#/$defs/check_status"
+        },
+        "poisoning_negative_test_passed": {
+          "$ref": "#/$defs/check_status"
+        }
+      }
+    },
+    "tolerance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logit_max_abs_delta",
+        "top_k_jaccard_min",
+        "deterministic_text_digest_match_required"
+      ],
+      "properties": {
+        "logit_max_abs_delta": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "top_k_jaccard_min": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deterministic_text_digest_match_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "validation_latency_ms",
+        "restore_latency_ms",
+        "blob_size_bytes",
+        "top_k_jaccard",
+        "logit_max_abs_delta",
+        "deterministic_text_digest",
+        "prompt_tokens",
+        "cached_tokens",
+        "processed_prompt_tokens"
+      ],
+      "properties": {
+        "validation_latency_ms": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "restore_latency_ms": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "blob_size_bytes": {
+          "$ref": "#/$defs/nullable_non_negative_integer"
+        },
+        "top_k_jaccard": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logit_max_abs_delta": {
+          "$ref": "#/$defs/nullable_non_negative_number"
+        },
+        "deterministic_text_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256_hex"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt_tokens": {
+          "$ref": "#/$defs/nullable_non_negative_integer"
+        },
+        "cached_tokens": {
+          "$ref": "#/$defs/nullable_non_negative_integer"
+        },
+        "processed_prompt_tokens": {
+          "$ref": "#/$defs/nullable_non_negative_integer"
+        }
+      }
+    },
+    "failure_reason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "manifest_schema_failed",
+            "checksum_mismatch",
+            "size_mismatch",
+            "restore_api_failed",
+            "logits_mismatch",
+            "top_k_mismatch",
+            "deterministic_text_mismatch",
+            "mtp_restore_mismatch",
+            "tenant_policy_mismatch",
+            "poisoning_negative_test_failed",
+            "not_applicable"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fallback_not_required_reason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "quarantine_recommended": {
+      "type": "boolean"
+    },
+    "fallback_required": {
+      "type": "boolean"
+    },
+    "security_signal": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "none",
+            "possible_cache_poisoning",
+            "tenant_mismatch",
+            "checksum_mismatch",
+            "schema_mismatch",
+            "path_traversal_attempt",
+            "corrupt_blob",
+            "stale_residency",
+            "policy_violation"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 300
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "fail",
+              "error"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "failure_reason": {
+            "type": "string"
+          }
+        },
+        "anyOf": [
+          {
+            "properties": {
+              "fallback_required": {
+                "const": true
+              }
+            }
+          },
+          {
+            "properties": {
+              "fallback_not_required_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "id_string": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "check_status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "skipped",
+        "not_checked"
+      ]
+    },
+    "nullable_non_negative_number": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullable_non_negative_integer": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

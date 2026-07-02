@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/cache-router/cache-manifest.schema.json",
+  "title": "Cache Router Cache Manifest",
+  "description": "Strict cache manifest contract for future cache-aware router prototypes. Unknown compatibility values are invalid for strict lookup; exploratory evidence should use the Markdown experiment schemas instead.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_id",
+    "cache_key_hash",
+    "cache_artifact_kind",
+    "scope",
+    "tenant_hash",
+    "conversation_hash",
+    "token_prefix_hash",
+    "prefix_token_ids_hash",
+    "n_tokens",
+    "model_id",
+    "model_architecture",
+    "gguf_tensor_manifest_hash",
+    "model_hash",
+    "tokenizer_hash",
+    "chat_template_effective_hash",
+    "special_token_policy",
+    "llama_cpp_source_commit",
+    "llama_cpp_cache_abi_version",
+    "patchset_id",
+    "build_backend",
+    "gpu_backend_driver",
+    "kv_unified_mode",
+    "ctx_size",
+    "ctx_checkpoints_config",
+    "cache_type_k",
+    "cache_type_v",
+    "flash_attention_mode",
+    "rope_freq_base",
+    "rope_freq_scale",
+    "yarn_or_rope_scaling_metadata",
+    "reasoning_format",
+    "jinja_template_mode",
+    "mtp_enabled",
+    "spec_draft_model_hash",
+    "spec_draft_config",
+    "n_parallel",
+    "n_seq_max",
+    "artifact_sha256",
+    "artifact_size_bytes",
+    "content_address",
+    "validation_status",
+    "created_by_run_id",
+    "created_utc"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "2026-06-30.1"
+    },
+    "manifest_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "cache_key_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "key_canonicalization_version": {
+      "type": "string",
+      "default": "2026-06-30.1"
+    },
+    "hash_algorithm": {
+      "type": "string",
+      "const": "sha256"
+    },
+    "cache_artifact_kind": {
+      "type": "string",
+      "enum": [
+        "kv_slot",
+        "sequence_state",
+        "ssd_checkpoint",
+        "system_prompt_prefix"
+      ]
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "global_system",
+        "tenant",
+        "conversation",
+        "private_disabled"
+      ]
+    },
+    "tenant_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "conversation_hash": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256_hex"
+        },
+        {
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
+    "token_prefix_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "prefix_token_ids_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "n_tokens": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "model_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "model_architecture": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "gguf_tensor_manifest_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "model_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "tokenizer_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "chat_template_effective_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "special_token_policy": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "llama_cpp_source_commit": {
+      "$ref": "#/$defs/commitish"
+    },
+    "llama_cpp_cache_abi_version": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "patchset_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "build_backend": {
+      "type": "string",
+      "enum": [
+        "vulkan_radv",
+        "vulkan_amdvlk",
+        "rocm_hip",
+        "cpu",
+        "other"
+      ]
+    },
+    "gpu_backend_driver": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "kv_unified_mode": {
+      "type": "boolean"
+    },
+    "ctx_size": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ctx_checkpoints_config": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "cache_type_k": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "cache_type_v": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "flash_attention_mode": {
+      "type": "string",
+      "enum": [
+        "on",
+        "off",
+        "auto"
+      ]
+    },
+    "rope_freq_base": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "rope_freq_scale": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "yarn_or_rope_scaling_metadata": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "reasoning_format": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "jinja_template_mode": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "mtp_enabled": {
+      "type": "boolean"
+    },
+    "spec_draft_model_hash": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256_hex"
+        },
+        {
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
+    "spec_draft_config": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "n_parallel": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "n_seq_max": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "artifact_sha256": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "artifact_size_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "content_address": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "validation_status": {
+      "type": "string",
+      "enum": [
+        "validated",
+        "quarantined",
+        "corrupt",
+        "expired"
+      ]
+    },
+    "created_by_run_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "created_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_utc": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "integer",
+          "boolean",
+          "null"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "enum": [
+          "unknown",
+          "not_captured",
+          "not_interpreted"
+        ]
+      }
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "commitish": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._+-]{7,64}$",
+      "not": {
+        "enum": [
+          "unknown",
+          "not_captured",
+          "not_interpreted"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,61 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.cache/
+.venv/
+venv/
+.DS_Store
+
+# Local runtime state
+runtime/
+logs/
+*.log
+*.pid
+*.sock
+
+# Secrets and client state
+.env
+.env.*
+*.env
+auth-token.txt
+auth.json
+credentials.json
+token.json
+provider_config.json
+secrets.*
+*.pem
+*.key
+
+# Model and cache artifacts
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.bin
+*.slot
+slot_files/
+cache_blobs/
+raw_slots/
+raw_cache/
+ssd_cache/
+
+# Raw/private experiment material
+raw_logs/
+raw_prompts/
+raw_requests/
+raw_responses/
+full_prompts/
+transcripts/
+full_transcripts/
+private_workspaces/
+raw_workspaces/
+
+# Build/package output
+dist/
+build/

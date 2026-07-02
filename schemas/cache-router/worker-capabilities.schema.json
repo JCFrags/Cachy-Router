@@ -1,0 +1,326 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/cache-router/worker-capabilities.schema.json",
+  "title": "Cache Router Worker Capabilities",
+  "description": "Worker capability advertisement for future cache-aware router prototypes. This describes what a worker can safely fingerprint, restore, commit, and serve.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "captured_utc",
+    "worker_id",
+    "node_id",
+    "base_url",
+    "health_status",
+    "runtime",
+    "backend",
+    "models",
+    "cache_capabilities",
+    "limits",
+    "policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "2026-06-30.1"
+    },
+    "captured_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "worker_id": {
+      "$ref": "#/$defs/id_string"
+    },
+    "node_id": {
+      "$ref": "#/$defs/id_string"
+    },
+    "base_url": {
+      "type": "string",
+      "pattern": "^https?://"
+    },
+    "health_status": {
+      "type": "string",
+      "enum": [
+        "healthy",
+        "degraded",
+        "draining",
+        "offline"
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "version",
+        "source_commit",
+        "build_id",
+        "cache_abi_version",
+        "patchset_id"
+      ],
+      "properties": {
+        "family": {
+          "type": "string",
+          "enum": [
+            "llama.cpp",
+            "cachyllama",
+            "other"
+          ]
+        },
+        "version": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/commitish"
+        },
+        "build_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "cache_abi_version": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "patchset_id": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build_backend",
+        "gpu_backend_driver",
+        "device_name"
+      ],
+      "properties": {
+        "build_backend": {
+          "type": "string",
+          "enum": [
+            "vulkan_radv",
+            "vulkan_amdvlk",
+            "rocm_hip",
+            "cpu",
+            "other"
+          ]
+        },
+        "gpu_backend_driver": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "device_name": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model_id",
+          "model_architecture",
+          "model_hash",
+          "gguf_tensor_manifest_hash",
+          "tokenizer_hash",
+          "chat_template_effective_hash",
+          "max_ctx_size",
+          "mtp_supported"
+        ],
+        "properties": {
+          "model_id": {
+            "$ref": "#/$defs/non_empty_string"
+          },
+          "model_architecture": {
+            "$ref": "#/$defs/non_empty_string"
+          },
+          "model_hash": {
+            "$ref": "#/$defs/sha256_hex"
+          },
+          "gguf_tensor_manifest_hash": {
+            "$ref": "#/$defs/sha256_hex"
+          },
+          "tokenizer_hash": {
+            "$ref": "#/$defs/sha256_hex"
+          },
+          "chat_template_effective_hash": {
+            "$ref": "#/$defs/sha256_hex"
+          },
+          "max_ctx_size": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "mtp_supported": {
+            "type": "boolean"
+          },
+          "draft_model_hashes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/sha256_hex"
+            }
+          }
+        }
+      }
+    },
+    "cache_capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fingerprint_api",
+        "restore_api",
+        "commit_api",
+        "stats_api",
+        "slot_save_restore",
+        "cache_artifact_kinds",
+        "supports_mtp_restore",
+        "supports_cross_node_restore"
+      ],
+      "properties": {
+        "fingerprint_api": {
+          "type": "boolean"
+        },
+        "restore_api": {
+          "type": "boolean"
+        },
+        "commit_api": {
+          "type": "boolean"
+        },
+        "stats_api": {
+          "type": "boolean"
+        },
+        "slot_save_restore": {
+          "type": "boolean"
+        },
+        "cache_artifact_kinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "kv_slot",
+              "sequence_state",
+              "ssd_checkpoint",
+              "system_prompt_prefix"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "supports_mtp_restore": {
+          "type": "boolean"
+        },
+        "supports_cross_node_restore": {
+          "type": "boolean"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_parallel_requests",
+        "max_loaded_models",
+        "max_local_cache_bytes",
+        "min_free_memory_bytes",
+        "min_free_disk_bytes"
+      ],
+      "properties": {
+        "max_parallel_requests": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_loaded_models": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_local_cache_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_free_memory_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_free_disk_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_scopes",
+        "cross_tenant_reuse_allowed",
+        "global_system_allowlist_required",
+        "encryption_at_rest_required",
+        "audit_log_required"
+      ],
+      "properties": {
+        "allowed_scopes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "global_system",
+              "tenant",
+              "conversation",
+              "private_disabled"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "cross_tenant_reuse_allowed": {
+          "type": "boolean",
+          "const": false
+        },
+        "global_system_allowlist_required": {
+          "type": "boolean",
+          "const": true
+        },
+        "encryption_at_rest_required": {
+          "type": "boolean",
+          "const": true
+        },
+        "audit_log_required": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "id_string": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "enum": [
+          "unknown",
+          "not_captured",
+          "not_interpreted"
+        ]
+      }
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "commitish": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._+-]{7,64}$",
+      "not": {
+        "enum": [
+          "unknown",
+          "not_captured",
+          "not_interpreted"
+        ]
+      }
+    }
+  }
+}
