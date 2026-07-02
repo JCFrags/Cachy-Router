@@ -8,8 +8,6 @@ docs/                 setup, endpoint, architecture, and evidence policy
 evidence/             redacted public summaries only
 schemas/cache-router/ JSON schemas for router contracts and validation results
 scripts/              router daemon, worker sidecar, stack helpers, validators
-tests/                placeholder for future standalone test modules
-tools/                placeholder for future packaging and setup utilities
 ```
 
 The repository intentionally does not include raw proof artifacts, model files,

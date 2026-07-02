@@ -9,7 +9,7 @@ For installation and process startup, start with
 
 ## Security Boundary
 
-The default documented mode is no API key on a trusted LAN. This is convenient
+The default documented mode is unauthenticated on a trusted LAN. This is convenient
 for local experimentation, but it is not safe for the public internet or an
 untrusted network.
 
@@ -49,7 +49,7 @@ Use these settings in an OpenAI-compatible client:
 ```text
 Base URL: http://<router-lan-ip>:18080/v1
 Model: <model-name-served-by-workers>
-API key / Authorization: not required for trusted-LAN mode
+Authentication: none for trusted-LAN mode
 ```
 
 If a client refuses to save a provider without an authentication field, use a
@@ -67,7 +67,7 @@ Then configure the client with:
 ```text
 Base URL: http://127.0.0.1:18080/v1
 Model: <model-name-served-by-workers>
-API key / Authorization: not required for local or tunneled trusted use
+Authentication: none for local or tunneled trusted use
 ```
 
 ## Endpoint Checks

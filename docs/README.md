@@ -16,8 +16,8 @@ policy, and claim mapping.
 
 ## Document Classes
 
-- `architecture/`: design notes, setup guides, validation plans, and historical
-  implementation plans.
+- `architecture/`: design notes, setup guides, endpoint docs, and example
+  contract fixtures.
 - `architecture/examples/`: small replayable contract fixtures used by offline
   validation.
 - `benchmark-claim-map.md`: public wording guardrail for performance and cache
@@ -26,7 +26,7 @@ policy, and claim mapping.
   published.
 - `provenance.md`: publication-safe source and evidence provenance guidance.
 
-Historical notes and retained evidence may mention private machine names,
-addresses, or paths. Treat those as evidence context only. New setup
-instructions should use generic worker and router names, placeholder LAN
-addresses, and local deployment filenames.
+Historical notes and raw lab evidence should stay outside this public repo
+unless they have been redacted into a small summary. New setup instructions
+should use generic worker and router names, placeholder LAN addresses, and local
+deployment filenames.

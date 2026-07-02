@@ -864,7 +864,7 @@ def write_service_snapshot(path: Path, args: argparse.Namespace, status: dict[st
         f"- router bind: {args.router_host}:{args.router_port}",
         f"- worker bind: 127.0.0.1:{args.worker_port}",
         f"- cache root: {args.remote_cache_root}",
-        f"- API key required: {'yes' if args.router_auth else 'no'}",
+        f"- authentication required: {'yes' if args.router_auth else 'no'}",
         f"- router PID: {status.get('router', {}).get('pid')}",
         f"- worker PID: {status.get('worker', {}).get('pid')}",
         f"- worker slot-save-path: {status.get('worker', {}).get('slot_save_path')}",

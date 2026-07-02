@@ -155,7 +155,7 @@ router are running, add `--live` to check `/health` on the router, workers, and
 HTTP sidecars without restarting or mutating any process.
 
 The default examples below bind the router, workers, and sidecars to
-`0.0.0.0` without API keys for a trusted LAN. Do not use these flags on a public
+`0.0.0.0` without authentication for a trusted LAN. Do not use these flags on a public
 interface or untrusted network.
 
 ## Start Workers
@@ -247,7 +247,7 @@ OpenAI-compatible client settings:
 ```text
 Base URL: http://<router-lan-ip>:18080/v1
 Model: <model-name-served-by-workers>
-API key / Authorization: not required for trusted-LAN mode
+Authentication: none for trusted-LAN mode
 ```
 
 If a client UI insists on an API-key field, use any harmless placeholder. The

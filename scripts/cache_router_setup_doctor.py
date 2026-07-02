@@ -314,7 +314,7 @@ def build_summary(
         "client": {
             "base_url": (router_base_url.rstrip("/") + "/v1") if router_base_url else "http://<router-lan-ip>:18080/v1",
             "model": "Step-3.7",
-            "auth": "API key / Authorization not required for trusted home-LAN mode",
+            "auth": "authentication not required for trusted LAN mode",
         },
         "live_checks": live_checks or {},
     }

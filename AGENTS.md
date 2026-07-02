@@ -20,7 +20,7 @@ repository for Cachy Router.
 - The router may run on any machine that can reach the worker URLs and sidecars,
   including a worker, controller, desktop, or independent aggregator.
 - The inventory is N-worker. Do not hardcode or imply a two-worker limit.
-- The default MVP mode is no API key on a trusted LAN. Make the security
+- The default MVP mode is unauthenticated on a trusted LAN. Make the security
   boundary explicit whenever documenting `0.0.0.0` or unauthenticated sidecars,
   workers, or router endpoints.
 - Prefer Python standard library only unless a dependency is explicitly

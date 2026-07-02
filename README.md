@@ -39,9 +39,9 @@ Still required before broad claims:
 - stronger scheduler policy, queueing, quotas, eviction, and concurrency tests;
 - untrusted-network hardening, tenant isolation, and operational packaging.
 
-The default documented mode is no API key on a trusted LAN. Do not expose an
-unauthenticated router, worker, or sidecar directly to the public internet or any
-untrusted network.
+The default documented mode is unauthenticated on a trusted LAN. Do not expose a
+router, worker, or sidecar directly to the public internet or any untrusted
+network.
 
 ## Install
 
@@ -135,7 +135,7 @@ Client settings:
 ```text
 Base URL: http://<router-lan-ip>:18080/v1
 Model: <model-name-served-by-workers>
-API key: not required in trusted-LAN mode; use a harmless placeholder if needed
+Authentication: none in trusted-LAN mode
 ```
 
 ## Configuration
@@ -169,8 +169,8 @@ strings.
 - `evidence/cache-router-results-summary.md`: public-safe result summary.
 - `evidence/README.md`: evidence retention rules.
 
-Historical lab notes should stay private unless they have been redacted into a
-small public summary.
+Historical lab notes should stay outside this public repo unless they have been
+redacted into a small public summary.
 
 ## Offline Checks
 
@@ -200,3 +200,7 @@ This repository intentionally excludes:
 - package archives and generated build output.
 
 See `docs/raw-evidence-retention-audit.md` for evidence handling rules.
+
+## License
+
+MIT. See `LICENSE`.
