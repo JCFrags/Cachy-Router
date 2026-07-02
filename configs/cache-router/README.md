@@ -10,8 +10,10 @@ paths, and cache roots that are specific to one home network.
 Recommended pattern:
 
 ```bash
-cp configs/cache-router/workers.example.json configs/cache-router/local.workers.json
+cp configs/cache-router/workers.example.json configs/cache-router/<name>.local.json
 ```
 
-Then edit `local.workers.json` for your machines and keep it out of Git if it
+Then edit `<name>.local.json` for your machines and keep it out of Git if it
 contains private topology.
+
+Files matching `configs/cache-router/*.local.json` are ignored by default.
