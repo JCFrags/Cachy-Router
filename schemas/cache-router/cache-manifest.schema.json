@@ -22,6 +22,8 @@
     "model_hash",
     "tokenizer_hash",
     "chat_template_effective_hash",
+    "tools_schema_hash",
+    "system_prompt_hash",
     "special_token_policy",
     "llama_cpp_source_commit",
     "llama_cpp_cache_abi_version",
@@ -47,6 +49,7 @@
     "artifact_sha256",
     "artifact_size_bytes",
     "content_address",
+    "encryption_at_rest",
     "validation_status",
     "created_by_run_id",
     "created_utc"
@@ -128,6 +131,12 @@
       "$ref": "#/$defs/sha256_hex"
     },
     "chat_template_effective_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "tools_schema_hash": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "system_prompt_hash": {
       "$ref": "#/$defs/sha256_hex"
     },
     "special_token_policy": {
@@ -230,13 +239,52 @@
       "type": "string",
       "pattern": "^sha256:[a-f0-9]{64}$"
     },
+    "encryption_at_rest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "mode",
+        "evidence_basis",
+        "volume_id_hash",
+        "key_owner"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean",
+          "const": true
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "operator_managed_encrypted_filesystem",
+            "platform_encrypted_volume"
+          ]
+        },
+        "evidence_basis": {
+          "type": "string",
+          "enum": [
+            "operator_attestation",
+            "setup_doctor_metadata"
+          ]
+        },
+        "volume_id_hash": {
+          "$ref": "#/$defs/sha256_hex"
+        },
+        "key_owner": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
     "validation_status": {
       "type": "string",
       "enum": [
         "validated",
         "quarantined",
         "corrupt",
-        "expired"
+        "expired",
+        "tenant_deleted",
+        "deleted"
       ]
     },
     "created_by_run_id": {

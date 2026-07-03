@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import http.client
@@ -32,6 +33,17 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def fsync_dir(path: Path) -> None:
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _prefix(binary: str, config: str = "", extra_args: str = "") -> list[str]:
@@ -117,6 +129,64 @@ class SlotTransport:
             row["sidecar_url"] = self.sidecar_url
         return row
 
+    def sidecar_readiness(self, *, timeout: float | None = None) -> dict[str, Any]:
+        if self.kind != "http":
+            return {
+                "ok": True,
+                "state": "not_applicable",
+                "transport": self.kind,
+                "required": False,
+                "checked": False,
+            }
+        start = time.perf_counter()
+        req = urllib.request.Request(self.sidecar_url + "/health", method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout if timeout is None else timeout) as resp:
+                status = resp.status
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            return {
+                "ok": False,
+                "state": "unhealthy",
+                "transport": self.kind,
+                "required": True,
+                "checked": True,
+                "http_status": exc.code,
+                "wall_ms": (time.perf_counter() - start) * 1000.0,
+                "error": raw[:200],
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "state": "unreachable",
+                "transport": self.kind,
+                "required": True,
+                "checked": True,
+                "http_status": None,
+                "wall_ms": (time.perf_counter() - start) * 1000.0,
+                "error": repr(exc),
+            }
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            body = {}
+        reported_worker_id = body.get("worker_id") if isinstance(body, dict) else None
+        worker_mismatch = isinstance(reported_worker_id, str) and reported_worker_id != self.worker_id
+        ok = status == 200 and isinstance(body, dict) and body.get("ok") is True and body.get("status") == "ok" and not worker_mismatch
+        row = {
+            "ok": ok,
+            "state": "worker_mismatch" if worker_mismatch else ("ready" if ok else "unhealthy"),
+            "transport": self.kind,
+            "required": True,
+            "checked": True,
+            "http_status": status,
+            "wall_ms": (time.perf_counter() - start) * 1000.0,
+        }
+        if isinstance(reported_worker_id, str):
+            row["worker_id"] = reported_worker_id
+        return row
+
     def slot_path(self, filename: str) -> str:
         if not filename or "/" in filename or filename in {".", ".."}:
             raise ValueError(f"slot filename must be a simple basename: {filename!r}")
@@ -176,13 +246,22 @@ print(json.dumps(out, sort_keys=True))
 
     def upload_to_router(self, filename: str, router_blob_path: Path) -> dict[str, Any]:
         router_blob_path.parent.mkdir(parents=True, exist_ok=True)
+        http_metadata: dict[str, Any] | None = None
         with tempfile.NamedTemporaryFile(prefix=router_blob_path.name + ".", suffix=".tmp", dir=router_blob_path.parent, delete=False) as tmp:
             tmp_path = Path(tmp.name)
         try:
             if self.kind == "local":
                 shutil.copyfile(self.slot_path(filename), tmp_path)
             elif self.kind == "http":
-                self._http_download(filename, tmp_path)
+                http_metadata = self._http_json("POST", "/upload", {"filename": filename})
+                if http_metadata.get("ok") is not True:
+                    raise RuntimeError(f"sidecar upload preflight failed: {http_metadata}")
+                self._http_download_path(str(http_metadata.get("content_path") or f"/slots/{urllib.parse.quote(filename)}/content"), tmp_path)
+                downloaded_hash = sha256_file(tmp_path)
+                if http_metadata.get("sha256") and downloaded_hash != http_metadata.get("sha256"):
+                    raise RuntimeError(f"sidecar upload hash mismatch: sidecar={http_metadata.get('sha256')} downloaded={downloaded_hash}")
+                if http_metadata.get("size_bytes") is not None and tmp_path.stat().st_size != int(http_metadata["size_bytes"]):
+                    raise RuntimeError(f"sidecar upload size mismatch: sidecar={http_metadata.get('size_bytes')} downloaded={tmp_path.stat().st_size}")
             else:
                 _run(
                     self.scp_cmd([f"{self.ssh_host}:{self.slot_path(filename)}", str(tmp_path)]),
@@ -192,10 +271,11 @@ print(json.dumps(out, sort_keys=True))
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp_path, router_blob_path)
+            fsync_dir(router_blob_path.parent)
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
-        return {
+        result = {
             "worker_id": self.worker_id,
             "transport": self.kind,
             "source": self.display_slot_path(filename),
@@ -203,12 +283,30 @@ print(json.dumps(out, sort_keys=True))
             "size_bytes": router_blob_path.stat().st_size,
             "sha256": sha256_file(router_blob_path),
         }
+        if http_metadata is not None:
+            result["sidecar_operation"] = http_metadata.get("operation")
+            result["sidecar_sha256"] = http_metadata.get("sha256")
+            result["sidecar_size_bytes"] = http_metadata.get("size_bytes")
+        return result
 
     def hydrate_from_router(self, router_blob_path: Path, filename: str) -> dict[str, Any]:
         if not router_blob_path.is_file():
             raise RuntimeError(f"router blob missing: {router_blob_path}")
         expected_hash = sha256_file(router_blob_path)
         self.ensure_slot_dir()
+        existing = self.file_info(filename, hash_file=True)
+        if existing.exists and existing.sha256 == expected_hash:
+            return {
+                "worker_id": self.worker_id,
+                "transport": self.kind,
+                "source": str(router_blob_path),
+                "dest": existing.path,
+                "size_bytes": existing.size_bytes,
+                "sha256": existing.sha256,
+                "sha256_match": True,
+                "performed": False,
+            }
+        hydrate_result: dict[str, Any] | None = None
         if self.kind == "local":
             dest = Path(self.slot_path(filename))
             tmp = dest.with_suffix(dest.suffix + ".tmp")
@@ -217,8 +315,9 @@ print(json.dumps(out, sort_keys=True))
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, dest)
+            fsync_dir(dest.parent)
         elif self.kind == "http":
-            self._http_upload(router_blob_path, filename)
+            hydrate_result = self._http_hydrate(router_blob_path, filename, expected_hash=expected_hash)
         else:
             remote_path = self.slot_path(filename)
             remote_tmp = remote_path + ".tmp"
@@ -227,12 +326,25 @@ print(json.dumps(out, sort_keys=True))
             script = r'''
 import json, os
 payload = json.loads(PAYLOAD)
+with open(payload["tmp"], "ab") as fh:
+    fh.flush()
+    os.fsync(fh.fileno())
 os.replace(payload["tmp"], payload["dest"])
+dest_dir = os.path.dirname(payload["dest"]) or "."
+try:
+    fd = os.open(dest_dir, os.O_RDONLY)
+except OSError:
+    fd = None
+if fd is not None:
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 print("{}")
 '''.replace("PAYLOAD", repr(payload))
             _run(self.ssh_cmd(["/bin/bash", "-s"]), input_text="python3 - <<'PY'\n" + script + "PY\n", timeout=60)
         info = self.file_info(filename, hash_file=True)
-        return {
+        result = {
             "worker_id": self.worker_id,
             "transport": self.kind,
             "source": str(router_blob_path),
@@ -240,7 +352,12 @@ print("{}")
             "size_bytes": info.size_bytes,
             "sha256": info.sha256,
             "sha256_match": info.sha256 == expected_hash,
+            "performed": bool(hydrate_result.get("performed", True)) if hydrate_result is not None else True,
         }
+        if hydrate_result is not None:
+            result["sidecar_operation"] = hydrate_result.get("operation")
+            result["sidecar_performed"] = hydrate_result.get("performed")
+        return result
 
     def display_slot_path(self, filename: str) -> str:
         path = self.slot_path(filename)
@@ -250,8 +367,15 @@ print("{}")
             return f"{self.sidecar_url}:{path}"
         return f"{self.ssh_host}:{path}"
 
-    def _http_json(self, method: str, path: str) -> dict[str, Any]:
-        req = urllib.request.Request(self.sidecar_url + path, method=method)
+    def _sidecar_request_path(self, path: str) -> str:
+        parsed = urllib.parse.urlsplit(self.sidecar_url)
+        base = parsed.path.rstrip("/") if parsed.path else ""
+        return base + path
+
+    def _http_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        data = None if payload is None else json.dumps(payload, sort_keys=True).encode("utf-8")
+        headers = {"Content-Type": "application/json"} if payload is not None else {}
+        req = urllib.request.Request(self.sidecar_url + path, data=data, headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             body = resp.read().decode("utf-8")
         row = json.loads(body)
@@ -259,23 +383,34 @@ print("{}")
             raise RuntimeError(f"sidecar returned non-object JSON for {path}")
         return row
 
-    def _http_download(self, filename: str, dest: Path) -> None:
-        url = self.sidecar_url + f"/slots/{urllib.parse.quote(filename)}/content"
+    def _http_download_path(self, path: str, dest: Path) -> None:
+        if not path.startswith("/"):
+            raise RuntimeError(f"sidecar content path must be absolute: {path!r}")
+        url = self.sidecar_url + path
         with urllib.request.urlopen(url, timeout=self.timeout) as resp, dest.open("wb") as fh:
             shutil.copyfileobj(resp, fh, length=1024 * 1024)
             fh.flush()
             os.fsync(fh.fileno())
 
-    def _http_upload(self, source: Path, filename: str) -> None:
+    def _http_hydrate(self, source: Path, filename: str, *, expected_hash: str) -> dict[str, Any]:
         parsed = urllib.parse.urlsplit(self.sidecar_url)
         if parsed.scheme not in {"http", "https"}:
             raise RuntimeError(f"unsupported sidecar URL scheme: {parsed.scheme}")
-        path = (parsed.path.rstrip("/") if parsed.path else "") + f"/slots/{urllib.parse.quote(filename)}/content"
+        path = self._sidecar_request_path(
+            "/hydrate?"
+            + urllib.parse.urlencode(
+                {
+                    "filename": filename,
+                    "expected_sha256": expected_hash,
+                    "size_bytes": str(source.stat().st_size),
+                }
+            )
+        )
         conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
         netloc = parsed.netloc
         conn = conn_cls(netloc, timeout=self.timeout)
         try:
-            conn.putrequest("PUT", path)
+            conn.putrequest("POST", path)
             conn.putheader("Content-Type", "application/octet-stream")
             conn.putheader("Content-Length", str(source.stat().st_size))
             conn.endheaders()
@@ -285,10 +420,11 @@ print("{}")
             resp = conn.getresponse()
             body = resp.read().decode("utf-8", errors="replace")
             if resp.status >= 300:
-                raise RuntimeError(f"sidecar upload failed HTTP {resp.status}: {body[:500]}")
+                raise RuntimeError(f"sidecar hydrate failed HTTP {resp.status}: {body[:500]}")
             row = json.loads(body)
-            if not isinstance(row, dict) or row.get("exists") is not True:
-                raise RuntimeError(f"sidecar upload did not return file info: {body[:500]}")
+            if not isinstance(row, dict) or row.get("ok") is not True:
+                raise RuntimeError(f"sidecar hydrate did not return success: {body[:500]}")
+            return row
         finally:
             conn.close()
 
@@ -315,11 +451,15 @@ def run_self_test() -> int:
         missing = transport.file_info("demo.slot", hash_file=True)
         hydrate = transport.hydrate_from_router(blob, "demo.slot")
         final = transport.file_info("demo.slot", hash_file=True)
+        hydrate_again = transport.hydrate_from_router(blob, "demo.slot")
         ok = (
             source.exists
             and not missing.exists
             and upload["sha256"] == source.sha256
             and hydrate["sha256_match"] is True
+            and hydrate["performed"] is True
+            and hydrate_again["sha256_match"] is True
+            and hydrate_again["performed"] is False
             and final.sha256 == source.sha256
         )
         sidecar_script = Path(__file__).with_name("cache_router_worker_sidecar.py")
@@ -378,8 +518,11 @@ def run_self_test() -> int:
                     and not http_missing.exists
                     and http_upload["sha256"] == http_source.sha256
                     and http_hydrate["sha256_match"] is True
+                    and http_hydrate["performed"] is True
                     and http_final.sha256 == http_source.sha256
                 )
+                http_hydrate_again = http_transport.hydrate_from_router(http_blob, "demo.slot")
+                http_ok = http_ok and http_hydrate_again["sha256_match"] is True and http_hydrate_again["performed"] is False
         finally:
             sidecar.terminate()
             try:
@@ -391,13 +534,14 @@ def run_self_test() -> int:
             json.dumps(
                 {
                     "ok": ok and http_ok,
-                    "local": {"source": source.as_dict(), "upload": upload, "hydrate": hydrate, "final": final.as_dict()},
+                    "local": {"source": source.as_dict(), "upload": upload, "hydrate": hydrate, "hydrate_again": hydrate_again, "final": final.as_dict()},
                     "http": {
                         "skipped": http_skipped,
                         "skip_reason": http_skip_reason,
                         "source": http_source.as_dict(),
                         "upload": http_upload,
                         "hydrate": http_hydrate,
+                        "hydrate_again": http_hydrate_again if not http_skipped else {},
                         "final": http_final.as_dict(),
                     },
                 },

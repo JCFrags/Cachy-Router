@@ -1,29 +1,29 @@
 # Raw Evidence Retention Audit
 
-/goal
-
 This audit is current when a maintainer can tell which evidence is tracked,
 which evidence must stay ignored locally, which evidence may become a curated
 release asset later, and which evidence must never be public.
 
 ## Current Scan Snapshot
 
-Date: 2026-06-30.
+Date: 2026-07-03.
 
-Commands were local and read-only except for normal release-index/audit
-regeneration in adjacent commits. No secret values were printed.
+Commands are local and do not contact private hosts. The public hygiene scanner
+prints rule names and locations only; it does not print matched secret values.
 
 | check | result |
 |---|---:|
-| tracked path denylist scan | 0 violations |
-| tracked files larger than 1 MiB | 0 files |
-| secret-like value scan | 0 value hits |
-| secret-like key/name scan | 24 benign key-word hits in docs/scripts/log summaries |
-| representative `git check-ignore` raw-path checks | passed |
-| release-index unsafe-path scan | 0 unsafe indexed paths |
+| public hygiene scanner | 0 findings across 75 public paths |
+| tracked ignored file scan | 0 files |
+| public evidence size/text scan | passed |
+| high-confidence secret value scan | 0 value hits |
+| private topology scan | 0 value hits |
+| contract fixture privacy validation | passed |
 
-The benign key/name hits are terms such as credential, token, and private-key
-guardrail labels in docs and scripts, not secret values.
+The scanner allows explicit placeholders such as `<router-lan-ip>`,
+`<worker-a-lan-ip>`, `/home/<user>/...`, and test-only `secret-token` values,
+but rejects concrete private hostnames, private LAN addresses, local user paths,
+private-key headers, and real-looking API tokens in publishable files.
 
 ## Evidence Categories
 

@@ -29,10 +29,17 @@ for a small cluster, or more workers by adding more rows. There is no intended
 two-worker limit.
 
 Current scheduling is availability-aware at the worker-slot level: the router
-uses `/slots` state to prefer healthy idle workers, then cache-local workers,
-and can hydrate a durable blob into another idle worker when the hot worker is
-busy and fallback is allowed. This is enough for the current MVP, but production
-queueing, quotas, tenant policy, and weighted scheduling remain future work.
+first requires worker `/health` and worker `/v1/models` readiness, uses `/slots`
+state to prefer ready idle workers, then cache-local workers, and can hydrate a
+durable blob into another idle worker when the hot worker is busy and fallback is
+allowed. Worker `/v1/models` HTTP 503 loading responses are treated as warming,
+not as permanent failures. Optional router-side per-worker queueing can be
+enabled for normal proxy traffic with `--queue-limit-per-worker` and
+`--queue-wait-timeout`; when enabled, queue depth participates in scheduling and
+queue-full requests are rejected with bounded OpenAI-shaped `503` JSON before
+backend forwarding. This is enough for the current MVP, but production
+load-balancing policy, quotas, RSS-bound overload tests, and weighted scheduling
+remain future work.
 
 ## Worker Requirements
 
@@ -73,17 +80,76 @@ python3 scripts/cache_router_make_inventory.py \
   --worker worker-a=<worker-a-lan-ip> \
   --worker worker-b=<worker-b-lan-ip> \
   --output configs/cache-router/<deployment>.workers.json \
+  --cache-root /home/<user>/.cache/strix-halo-cache-router \
+  --durable-blob-encryption-mode operator_managed_encrypted_filesystem \
+  --durable-blob-encryption-evidence-basis operator_attestation \
+  --durable-blob-encryption-volume-id-hash <encrypted-volume-id-sha256> \
+  --durable-blob-encryption-key-owner operator \
+  --strict-metadata-force-runtime \
   --llama-server /home/<user>/llama.cpp/build/bin/llama-server \
   --model /models/<main-model>.gguf \
-  --model-identity <shared-main-model-identity> \
   --mtp-model /models/<draft-model>.gguf \
-  --mtp-model-identity <shared-draft-model-identity> \
-  --ctx-size 65536
+  --mtp-enabled \
+  --kv-unified-mode \
+  --ctx-size 65536 \
+  --cache-type-k q8_0 \
+  --cache-type-v q8_0
 ```
 
 Add more `--worker` arguments for more worker nodes. Use
 `worker-id@ssh-alias=lan-ip` when the SSH alias differs from the public worker
-ID.
+ID. The generated worker slot paths must be absolute worker-local paths before
+the setup doctor can pass; use an absolute `--cache-root`. Generated
+inventories enable runtime strict metadata derivation by default, so the daemon
+computes cache-key compatibility fields from `/v1/models`, `/props`, and
+`/tokenize` at startup instead of relying on hand-entered strict hashes. If you
+intentionally pin exact operator-supplied hashes or ABI IDs, disable
+`strict_metadata_force_runtime` for that deployment and keep the pinned values
+complete.
+
+## Durable Cache Storage
+
+The top-level `cache_storage` inventory block describes the router-owned
+durable blob store. For cache build/use, put this store on an
+operator-managed encrypted cache root, such as a local encrypted filesystem or
+platform encrypted volume mounted outside the Git checkout:
+
+```json
+{
+  "cache_storage": {
+    "cache_root": "/home/<user>/.cache/strix-halo-cache-router",
+    "durable_blob_encryption_at_rest": {
+      "required": true,
+      "mode": "operator_managed_encrypted_filesystem",
+      "evidence_basis": "operator_attestation",
+      "volume_id_hash": "<encrypted-volume-id-sha256>",
+      "key_owner": "operator"
+    }
+  }
+}
+```
+
+`volume_id_hash` is a SHA-256 digest of an operator-chosen encrypted volume
+identifier. Keep raw volume names, encryption keys, recovery keys,
+credentials, and token files out of the inventory. The setup doctor validates
+the metadata shape offline and warns while the public placeholder is still
+present.
+
+Router-created manifests can carry the same operator attestation when the
+router is started with the `--durable-blob-encryption-*` flags. The offline
+store audit can then reject active durable manifests that do not carry valid
+metadata:
+
+```bash
+python3 scripts/cache_router_store_audit.py \
+  --cache-root /home/<user>/.cache/strix-halo-cache-router \
+  --require-encryption-at-rest \
+  --json
+```
+
+This is an audit gate for an operator-managed encrypted cache root. It is not
+Python-level blob encryption, KMS integration, or proof that the underlying
+platform encryption is correctly configured.
 
 Recommended setup flow for a fresh GitHub checkout:
 
@@ -102,21 +168,23 @@ One worker row looks like:
   "worker_id": "worker-a",
   "ssh_host": "<worker-a-ssh-alias>",
   "worker_url": "http://<worker-a-lan-ip>:18082",
-  "slot_save_path": "/home/<user>/.cache/cachy-router/workers/worker-a/slots",
+  "slot_save_path": "/home/<user>/.cache/strix-halo-cache-router/workers/worker-a/slots",
   "slot_id": 0,
+  "strict_metadata_auto": true,
+  "strict_metadata_force_runtime": true,
   "model": "<model-name>",
-  "model_identity": "<same-compatible-model-identity-on-every-worker>",
   "model_path": "/models/<main-model>.gguf",
-  "model_file_size": 0,
   "llama_server_path": "/home/<user>/llama.cpp/build/bin/llama-server",
-  "llama_server_version": "<llama.cpp-version-or-commit>",
   "ctx_size": 65536,
+  "kv_unified_mode": true,
   "cache_type_k": "q8_0",
   "cache_type_v": "q8_0",
   "mtp_enabled": true,
-  "spec_draft_model_identity": "<same-compatible-draft-model-identity-on-every-worker>",
   "spec_draft_model_path": "/models/<draft-model>.gguf",
-  "spec_draft_model_size": 0,
+  "spec_draft_n_max": 3,
+  "spec_draft_n_min": 0,
+  "spec_draft_p_split": "0.10",
+  "spec_draft_p_min": "0.60",
   "transport": {
     "kind": "http",
     "sidecar_url": "http://<worker-a-lan-ip>:18083"
@@ -131,14 +199,19 @@ for colocated router/worker tests. The `ssh` transport is useful in controlled
 deployments but requires the router host itself to have SSH access to workers.
 
 `model_path` and `spec_draft_model_path` are worker-local filesystem paths and
-may differ across machines. `model_identity` and `spec_draft_model_identity`
-are the compatibility identities the router uses for cache keys. Workers that
-should share cache blobs must use the same identities and matching model bytes,
-runtime version, context size, KV cache types, MTP/speculative settings, and
-template behavior. Local paths are kept as provenance/debug metadata, not as
-the shared compatibility boundary.
+may differ across machines. With `strict_metadata_auto` and
+`strict_metadata_force_runtime` enabled, these local paths and launch hints are
+not treated as hand-entered cache proof. At router startup the daemon computes
+the strict cache-key fields from worker runtime APIs and tokenizer probes. Those
+computed fields include model and draft hashes, GGUF tensor manifest surrogate,
+tokenizer hash, chat template hash, tools schema hash, system prompt hash,
+model architecture, special-token policy, llama.cpp source/cache ABI, local
+patchset, backend/driver lane, context and KV settings, RoPE/YaRN metadata,
+MTP/speculative config, parallel/sequence lane, and template/reasoning modes.
+Local paths are kept as provenance/debug metadata, not as the shared
+compatibility boundary.
 
-Before starting anything, validate the inventory:
+Validate an inventory without touching live hosts:
 
 ```bash
 python3 scripts/cache_router_setup_doctor.py \
@@ -148,15 +221,23 @@ python3 scripts/cache_router_setup_doctor.py \
 ```
 
 The example file intentionally contains placeholders, so the doctor reports
-warnings until you replace them. A deployment inventory can be tracked for a
-public/reproducible deployment or kept local for private hostnames, but a real
-inventory should have zero failures before runtime work. After workers and the
-router are running, add `--live` to check `/health` on the router, workers, and
-HTTP sidecars without restarting or mutating any process.
+warnings until you replace deployment URLs, paths, and encryption metadata.
+Because the template enables runtime-forced strict metadata derivation, missing
+manual strict hashes are reported as informational derivation posture rather
+than as fields you must fill by hand. A deployment inventory can be tracked for
+a public/reproducible deployment or kept local for private hostnames, but a real
+inventory should have zero failures before runtime work.
+After workers and the router are running, add `--live` to check `/health` on
+the router, workers, and HTTP sidecars without restarting or mutating any
+process.
 
 The default examples below bind the router, workers, and sidecars to
 `0.0.0.0` without authentication for a trusted LAN. Do not use these flags on a public
 interface or untrusted network.
+
+Commands in the runtime sections below are live operations. Run them only with
+an operator-supplied deployment inventory, reachable worker/router hosts, and a
+trusted LAN security boundary.
 
 ## Start Workers
 
@@ -223,7 +304,9 @@ python3 scripts/cache_router_remote_stack.py worker-status \
 
 Run this on the controller from the repo checkout. The router host can be a
 worker node or a separate PC reachable by SSH. Use the same inventory file that
-was used to start workers:
+was used to start workers. When the inventory has `cache_storage.cache_root`,
+the remote helper stages the router and durable store under that root unless
+`--remote-cache-root` is passed explicitly:
 
 ```bash
 python3 scripts/cache_router_remote_stack.py restart-router \
@@ -231,8 +314,37 @@ python3 scripts/cache_router_remote_stack.py restart-router \
   --router-host 0.0.0.0 \
   --no-router-auth \
   --allow-unauthenticated-lan \
+  --durable-blob-encryption-mode operator_managed_encrypted_filesystem \
+  --durable-blob-encryption-evidence-basis operator_attestation \
+  --durable-blob-encryption-volume-id-hash <encrypted-volume-id-sha256> \
+  --durable-blob-encryption-key-owner operator \
   --workers-file configs/cache-router/<deployment>.workers.json
 ```
+
+Add `--disable-router-admin-endpoints` if the OpenAI-compatible client surface
+should remain available but `/router/*` inspection routes and `/metrics` should
+be disabled.
+
+For authenticated private-LAN production-mode posture, use router auth instead
+of the no-key trusted-LAN override. This is an authenticated deployment mode,
+not a broad production-readiness claim:
+
+```bash
+python3 scripts/cache_router_remote_stack.py restart-router \
+  --remote-host <router-ssh-alias> \
+  --router-host 0.0.0.0 \
+  --router-auth \
+  --production-router-mode \
+  --durable-blob-encryption-mode operator_managed_encrypted_filesystem \
+  --durable-blob-encryption-evidence-basis operator_attestation \
+  --durable-blob-encryption-volume-id-hash <encrypted-volume-id-sha256> \
+  --durable-blob-encryption-key-owner operator \
+  --workers-file configs/cache-router/<deployment>.workers.json
+```
+
+In production mode, `/health` remains available with reduced detail, `/v1/*`
+requires `Authorization: Bearer <router-token>` or `X-API-Key: <router-token>`,
+and admin endpoints are disabled unless explicitly allowed.
 
 Check it:
 
@@ -240,6 +352,7 @@ Check it:
 curl -fsS http://<router-lan-ip>:18080/health
 curl -fsS http://<router-lan-ip>:18080/v1/models
 curl -fsS http://<router-lan-ip>:18080/router/workers
+curl -fsS http://<router-lan-ip>:18080/metrics
 ```
 
 OpenAI-compatible client settings:
@@ -255,7 +368,7 @@ current no-key router path does not validate that field.
 
 The router defaults cached `use` requests to `allow_fallback=true`. Set
 `cache_router.allow_fallback=false` only when you are intentionally testing one
-specific worker and want the request to fail instead of using another healthy
+specific worker and want the request to fail instead of using another ready
 configured worker.
 
 ## Retained Evidence
@@ -267,5 +380,5 @@ unless they have been redacted and reviewed.
 Current public claims should remain narrow: trusted-LAN no-key use, normal
 OpenAI-compatible pass-through, explicit suffix-route cache flows, HTTP sidecar
 hydration, and bounded availability-aware routing probes. Production hardening
-still needs concurrency/load policy, cache eviction, untrusted-network policy,
-and restore-correctness negative tests.
+still needs production retention/GC orchestration, concurrency/load policy, tenant hardening,
+untrusted-network policy, and restore-correctness negative tests.

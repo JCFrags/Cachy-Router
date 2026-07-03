@@ -10,9 +10,11 @@ policy, and claim mapping.
 2. `architecture/cache-router-openai-endpoint.md`: endpoint behavior and cache
    request extension.
 3. `architecture/cache-router.md`: router architecture.
-4. `benchmark-claim-map.md`: what the retained evidence supports.
-5. `raw-evidence-retention-audit.md`: evidence and privacy rules.
-6. `provenance.md`: how private lab evidence is redacted before publication.
+4. `architecture/final-acceptance-metrics.md`: measurable final-build gates
+   and current evidence status.
+5. `benchmark-claim-map.md`: what the retained evidence supports.
+6. `raw-evidence-retention-audit.md`: evidence and privacy rules.
+7. `provenance.md`: how private lab evidence is redacted before publication.
 
 ## Document Classes
 
@@ -22,6 +24,8 @@ policy, and claim mapping.
   validation.
 - `benchmark-claim-map.md`: public wording guardrail for performance and cache
   claims.
+- `architecture/final-acceptance-metrics.md`: final acceptance contract for
+  promoting planned/partial/live-gated metrics to done.
 - `raw-evidence-retention-audit.md`: rules for what may be tracked or
   published.
 - `provenance.md`: publication-safe source and evidence provenance guidance.

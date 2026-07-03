@@ -10,9 +10,10 @@ service.
 
 ## Status
 
-Hypothesis and architecture track only. Do not implement distributed cache
-runtime changes until single-node cache behavior and restore correctness are
-under control.
+Hypothesis and architecture track only. Cachy Router now has scoped no-MTP
+trusted-LAN deterministic restore evidence, but distributed runtime cache
+changes still require MTP-enabled, restart, two-node, and logit/top-k validation
+before they are treated as production-ready.
 
 ## Problem
 
@@ -51,8 +52,12 @@ Evidence anchors:
 - upstream `--cache-prompt` append-heavy reuse has short single-node evidence;
 - branch reuse needs checkpoints in the current upstream b9828 evidence;
 - CachyLLama is a current but invasive fork with SSD checkpoint/state paths;
+- Cachy Router has scoped no-MTP trusted-LAN suffix and deterministic restore
+  passes recorded as public-safe summaries;
 - short runtime comparisons did not show a meaningful raw-speed advantage for
-  CachyLLama.
+  CachyLLama;
+- MTP-enabled, restart, two-node, and logit/top-k distributed correctness
+  evidence remains required before broad cache-correctness claims.
 
 References:
 
@@ -125,16 +130,17 @@ works.
 
 A cache key must include at least:
 
-- llama.cpp source commit and cache ABI;
-- backend/runtime lane;
-- model tensor manifest hash and GGUF metadata;
-- tokenizer hash;
-- chat template hash;
-- KV cache types;
-- flash-attention mode;
-- context size and checkpoint configuration;
-- reasoning/template mode;
-- system/tool prompt hash;
+- model architecture, model hash, and GGUF tensor manifest hash;
+- tokenizer hash, chat template hash, tools schema hash, system prompt hash,
+  and special-token policy;
+- llama.cpp source commit, cache ABI, and local patchset ID;
+- backend/runtime lane and GPU driver lane;
+- KV cache types, KV unification mode, context size, and checkpoint
+  configuration;
+- RoPE/YaRN scaling metadata;
+- flash-attention mode, reasoning format, and Jinja/template mode;
+- MTP/speculative enablement, draft model hash, and draft config;
+- `n_parallel` and `n_seq_max` lane;
 - token-prefix hash and token count;
 - tenant namespace;
 - conversation namespace.

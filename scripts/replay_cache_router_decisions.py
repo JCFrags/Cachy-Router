@@ -191,7 +191,7 @@ def make_event(
     metrics: dict[str, Any],
     note: str,
 ) -> dict[str, Any]:
-    return {
+    event = {
         "schema_version": "2026-06-30.1",
         "event_id": f"evt-replay-{index:03d}",
         "trace_id": request["trace_id"],
@@ -233,6 +233,8 @@ def make_event(
         },
         "notes": note,
     }
+    event["audit_actions"] = contracts.expected_audit_actions(event)
+    return event
 
 
 def decide_one(index: int, request: dict[str, Any], workers: list[dict[str, Any]], registry: list[dict[str, Any]], policies: dict[str, dict[str, Any]]) -> dict[str, Any]:

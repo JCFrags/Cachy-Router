@@ -9,19 +9,27 @@ distributed-cache result.
 
 ## Status
 
-Production multi-node architecture and implementation plan. A one-node
-OpenAI-compatible endpoint MVP now exists and is documented separately in
+Production multi-node architecture and implementation plan. A trusted-LAN
+OpenAI-compatible router MVP now exists and is documented separately in
 `docs/architecture/cache-router-openai-endpoint.md`; do not mistake that MVP
 for production multi-node routing, tenant isolation, or cross-node cache
 correctness.
 
-The endpoint MVP proves one worker can accept OpenAI-compatible requests through
-a cache-router daemon, build a router-owned durable blob, hydrate a missing
-worker-local hot slot, restore it after a worker restart, and serve a
-suffix-only route with large prompt-processing reduction. Runtime distributed
-cache, multi-worker scheduling, and cross-node portability remain gated on the
-upstream cache primitive audit, isolated slot restore correctness tests, tenant
-policy review, and second-node validation plan.
+The current MVP proves portable router control flow with offline loopback
+workers: N-worker inventory parsing, model-readiness gating, OpenAI-compatible
+proxying, normal non-cached streaming, optional explicit cache build/use/refresh
+paths, worker-local hot-cache preference, router-owned durable blob hydration,
+redacted registry/store audit JSONL, sidecar transport checks, bounded metrics,
+local synthetic performance gates, target-concurrency gates, and a ten-minute
+loopback scheduler/accounting stress gate. Operator-run endpoint-matrix,
+restore-correctness, suffix-benchmark, and long-soak harnesses now exist, with
+short local self-tests in `make check`. One no-MTP trusted-LAN suffix benchmark
+and one no-MTP trusted-LAN deterministic restore-correctness gate have scoped
+live passes. Deployment-wide endpoint success, MTP-enabled restore correctness,
+restart/two-node restore, distributed-cache correctness, full 8-24 hour
+long-soak behavior, live production load behavior, and production security/ops
+behavior remain gated on the live, partial, and correctness acceptance rows in
+`docs/architecture/final-acceptance-metrics.md`.
 
 This plan extends `docs/architecture/distributed-cache.md`. It keeps the same
 boundary:
@@ -133,9 +141,11 @@ Sidecar-facing APIs:
 | API | purpose |
 |---|---|
 | `GET /inventory` | Return local cache artifact inventory and disk accounting |
-| `POST /hydrate` | Fetch durable blob to local NVMe after policy/lease approval |
-| `POST /upload` | Upload verified blob to durable storage |
+| `POST /hydrate` | Publish router-provided verified bytes to local NVMe; duplicate verified payloads no-op |
+| `POST /upload` | Verify an existing local artifact for router pull, or publish verified router-provided bytes into the sidecar slot directory |
 | `POST /evict` | Evict local cache artifacts under policy |
+| `POST /leases/acquire` | Acquire a sidecar-local cooperative lease that blocks local eviction and replacement writes while unexpired |
+| `POST /leases/release` | Release a sidecar-local cooperative lease |
 | `POST /verify` | Rehash and validate local artifact bytes |
 | `GET /health` | Sidecar readiness, disk pressure, and queue status |
 
@@ -145,12 +155,20 @@ Registry operations:
 |---|---|
 | lookup compatible manifest | Find manifests whose strict key exactly matches the request fingerprint and policy scope |
 | publish manifest | Make a verified cache blob visible after durable write |
-| acquire lease | Prevent duplicate hydration, restore, or publish races |
-| release lease | Complete or abort an in-flight operation |
+| acquire registry lease | Prevent duplicate hydration, restore, or publish races across routers and workers |
+| release registry lease | Complete or abort an in-flight registry-coordinated operation |
 | update residency | Record which nodes have hot local copies |
 | mark blob corrupt | Remove a bad blob from routing and trigger inspection |
 | expire/delete tenant scope | Enforce retention, deletion, and GC policy |
 | audit cache access | Record lookup, hit, miss, restore, commit, and fallback decisions |
+
+Implemented local MVP lease state is a JSON store at
+`router-store/registry-leases.json`, protected by `router-store/registry.lock`.
+The daemon acquires `build_upload` leases before worker slot mutation and
+router-owned blob publication, and `restore_hydrate` leases before cache
+hydration/restore/generation attempts. This is a cooperative local registry
+lease protocol under a shared cache root, not a production distributed lock
+service.
 
 Decision and validation event contracts:
 
@@ -216,15 +234,27 @@ cold-prefill fallback. These offline checks prove fixture semantics and privacy
 hygiene only; runtime KV correctness remains gated on upstream capability audit
 and isolated restore tests.
 
-Router public/admin APIs:
+Implemented router public/admin APIs:
 
 | API | access | purpose |
 |---|---|---|
+| `GET /health` | public health | Router process and worker readiness summary |
+| `GET /v1` | public discovery | OpenAI-compatible route discovery plus gated admin-route advertisement |
+| `GET /v1/models` | public OpenAI-compatible | Configured and ready model listing |
 | `POST /v1/chat/completions` | public ingress | OpenAI-compatible chat |
 | `POST /v1/completions` | optional public ingress | Completion-style workloads |
-| `GET /router/cache/stats` | admin only | Aggregate hit/miss/restore/fallback metrics |
+| `POST /tokenize` | public helper | Compatibility tokenization proxy to a ready worker |
+| `GET /router/cache` | admin only | Redacted cache registry summary with bounded quarantine status and reason fields |
 | `GET /router/workers` | admin only | Worker health, model, backend, cache capability, and load |
+| `GET /router/status` | admin only | Router, worker, cache, and inventory status summary |
 | `GET /router/decisions` | admin only | Recent redacted decision log |
+| `GET /metrics` | admin only | Prometheus text-format router, worker, routing, and cache-event metrics |
+
+The route surface, auth behavior, disabled-admin behavior, OpenAI-shaped error
+types, and router-owned request/trace/worker headers are validated by
+`scripts/validate_cache_router_endpoint_docs.py` and
+`scripts/cache_router_daemon_smoke_test.py`. This proves the documented MVP
+routes against the stdlib daemon only; it is not live deployment proof.
 
 ## Cache Scopes
 
@@ -246,10 +276,34 @@ Default policy:
 - cache access is auditable;
 - side-channel cache-hit probing is treated as a security risk.
 
+The daemon MVP enforces hashed tenant/scope policy for cache-extension
+requests before hydrate, restore, or suffix generation. Cache build and lookup
+are scoped by `scope`, `tenant_hash`, `conversation_hash`, and
+`policy_id_hash`. `scope=conversation` requires an exact `conversation_hash`;
+`scope=tenant` is the explicit broader policy for same-tenant reuse across
+conversations. A request that names an existing `cache_id` owned by another
+tenant/scope/conversation is admin-audited as `reject_policy` /
+`policy_denied`, but the client sees the same scoped cache-miss shape used for
+an absent cache and does not receive `X-Cache-Router-Cache-Hit-Level`.
+
 ## Strict Cache Key
 
 A missing or mismatched key field is a cache miss. It must never produce a
 best-effort restore.
+
+Restore-capable `use` and `auto` requests require either a request-supplied
+`cache_router.cache_key_hash` or non-empty `cache_router.prefix_text`. When the
+hash is present, it must match the scoped registry row and loaded manifest
+before hydrate, restore, suffix generation, or refresh rebuild work. This is a
+fail-closed equality guard. When the hash is not present, the daemon derives
+candidate request keys from the prefix, scoped policy, requested model/worker,
+and ready worker runtime fingerprints, then selects only an exact
+`cache_id` plus scoped `cache_key_hash` registry row. Cache-id-only restore is
+rejected before lookup, and the direct `use_cache()` path also requires an
+expected strict key. The loaded manifest recomputes its canonical
+`cache_key_hash` from persisted key material before any hydrate or restore, so
+registry and manifest rows cannot agree on an arbitrary forged hash. This is
+offline daemon lookup evidence, not live restore-output correctness.
 
 Required fields:
 
@@ -260,6 +314,8 @@ gguf_tensor_manifest_hash
 model_hash
 tokenizer_hash
 chat_template_effective_hash
+tools_schema_hash
+system_prompt_hash
 special_token_policy
 llama_cpp_source_commit
 llama_cpp_cache_abi_version
@@ -293,6 +349,17 @@ conversation_hash
 For strict router lookup, `unknown`, `not_captured`, and `not_interpreted` are
 invalid. Those values are acceptable only in exploratory result evidence, where
 they block stronger claims.
+
+The current stdlib daemon enforces the listed model/runtime strict fields it
+can capture from inventory and manifests before cache restore. That includes
+model architecture and bytes, GGUF tensor manifest, tokenizer, effective chat
+template, tools schema, system prompt, special-token policy, llama.cpp source
+commit, cache ABI, local patchset, backend/driver lane, KV/context settings,
+RoPE/YaRN scaling metadata, flash-attention and template modes, reasoning
+format, MTP/speculative config, and parallel/sequence lane. Missing, malformed,
+`unknown`, `not_captured`, or `not_interpreted` values fail closed before
+restore. Broader distributed-cache correctness still requires separate
+MTP-enabled, restart, two-node, and logit/top-k validation gates.
 
 ## Registry Schema Sketch
 
@@ -445,7 +512,10 @@ rank candidates:
   3. same model already loaded, cold prefill required
   4. model load required
   5. reject or backpressure
-acquire lease for hydration or restore when needed
+for normal proxy traffic, include active request count and optional router-side
+queue depth in the rank; when queueing is enabled, admit to the selected
+worker's bounded queue or return an OpenAI-shaped 503 before backend forwarding
+acquire registry lease for build/upload or hydration/restore when needed
 restore compatible cache or run cold prefill
 serve request
 commit/update cache if policy and validation allow
@@ -457,7 +527,7 @@ Failure flow:
 ```text
 restore fails checksum, key, policy, or validation
 mark manifest suspect or blob corrupt as appropriate
-release lease
+release registry lease
 fall back to cold prefill if request policy allows
 never return output from a corrupt-cache path
 record failure reason, validation basis, security signal, quarantine decision,
@@ -467,7 +537,8 @@ schedule follow-up verification or GC
 
 ## Correctness Validation
 
-Minimum tests before any router cache hit can support a public claim:
+Minimum tests before broad semantic or distributed restore correctness can
+support a public claim:
 
 | test | expected result |
 |---|---|
@@ -517,9 +588,19 @@ Record these metrics for cache-router work:
 | full context reprocess count | Requests that unexpectedly reprocess the full prompt |
 | erased/discarded cache events | Runtime or policy cache loss events |
 
-Use `docs/benchmark-metric-glossary.md` and
-`docs/benchmark-reporting-tables.md` for metric semantics. Do not infer cache
-correctness from latency improvement alone.
+Use `docs/architecture/final-acceptance-metrics.md`,
+`docs/benchmark-claim-map.md`, and `evidence/cache-router-results-summary.md`
+for current acceptance status, claim wording, and retained public-safe results.
+Do not infer cache correctness from latency improvement alone.
+
+The offline synthetic performance gate is `scripts/cache_router_performance_probe.py`.
+It starts a loopback fake worker plus a real router handler, measures direct
+worker `/v1/completions` latency against routed `/v1/completions` latency, and
+fails when the computed router-overhead p95 is above 50 ms. The same script
+seeds valid local registry/manifests and times `CacheRouterState.ensure_entry()`
+for local lookup/manifest validation, failing when p95 is above 25 ms. This is
+portable code-path evidence only; it is not live worker generation, sidecar
+hydrate/restore, distributed-store, or deployment-network evidence.
 
 ## MVP Phases
 
@@ -550,7 +631,7 @@ Phase 3: sidecar and registry
 - Node-local inventory.
 - Hydration/upload.
 - Immutable blob storage.
-- Lease and residency tracking.
+- Sidecar-local eviction leases plus registry lease and residency tracking.
 - Eviction policy.
 
 Phase 4: cache-aware router MVP
@@ -559,6 +640,7 @@ Phase 4: cache-aware router MVP
 - Worker registry.
 - Cache lookup.
 - Cache-aware placement.
+- Optional per-worker queueing for normal proxy traffic.
 - Fallback to cold prefill.
 - Metrics and redacted decision logging.
 
@@ -573,8 +655,8 @@ Phase 6: production hardening
 - Tenant policy.
 - Encryption at rest.
 - Audit log.
-- GC.
-- Backpressure.
+- Production GC orchestration.
+- Production overload and memory-bound backpressure tests.
 - Failover.
 - RPO/RTO modes.
 
@@ -592,19 +674,66 @@ Avoid vague "preserve cache no matter what" goals. Use explicit modes:
 Cache acceleration must never be more important than correctness. If durability
 or validation is uncertain, route to cold prefill.
 
+The offline durable-store audit path is `scripts/cache_router_store_audit.py`.
+It reads a local cache root, verifies manifest JSON plus strict metadata, checks
+content-addressed blob placement, blob SHA-256, and blob size, and can rebuild
+`router-store/registry.json` from valid manifests without contacting workers,
+sidecars, routers, or private hosts. When durable shared blobs are enabled, the
+cache root should be an operator-managed encrypted cache root. Operators record
+only non-secret attestation metadata: encryption mode, evidence basis,
+`volume_id_hash`, and key owner. Router-created manifests can carry that
+metadata through the daemon `--durable-blob-encryption-*` flags, and the store
+tool can reject active manifests without valid metadata with
+`--require-encryption-at-rest`. This proves a declaration and audit gate for an
+operator-managed encrypted filesystem or platform encrypted volume; it does not
+prove Python-level blob encryption, KMS integration, or platform configuration.
+The daemon and store audit tool also maintain local registry leases in
+`router-store/registry-leases.json` under `router-store/registry.lock`; expired
+lease rows are pruned before load/acquire and release removes completed lease
+IDs. The same offline tool can dry-run or apply
+tenant deletion with `--delete-tenant <tenant_hash> --apply`: matching registry
+entries are removed, matching manifests are tombstoned with
+`validation_status=tenant_deleted`, and bounded records are appended to
+`router-store/gc-queue.jsonl`. `--gc-unreferenced-blobs --apply` then deletes
+only content-addressed blobs that are not referenced by active manifests, and
+refuses destructive GC when manifest parsing or required-field validation cannot
+prove the active reference set. This is local operator durable-store tooling,
+not production auth-derived tenant deletion, multi-router retention
+orchestration, or a distributed lock service.
+
+Runtime cache decisions and offline store mutations also append redacted audit
+rows to `router-store/registry-audit.jsonl`. The daemon records lookup, hit,
+miss, restore, commit, fallback, denial, and quarantine-related rows with
+request/trace correlation and flush/fsync; the offline store tool records
+applied tenant-delete and GC operations while dry-runs write no rows. This is a
+local append-only JSONL trail under the cache root, not tamper-proof/WORM audit
+storage or distributed log ordering.
+
 ## Security And Privacy
 
 Requirements:
 
 - KV cache and sequence-state files are sensitive data.
-- Encryption at rest is mandatory for durable shared blobs.
+- Encryption at rest is mandatory for durable shared blobs; the current
+  MVP path is an operator-managed encrypted cache root plus manifest metadata
+  and `scripts/cache_router_store_audit.py --require-encryption-at-rest`.
 - Per-tenant namespace is mandatory.
 - Cross-tenant cache reuse is denied by default.
+- Conversation-scoped cache reuse requires the exact request
+  `conversation_hash`; `scope=tenant` is the explicit same-tenant broader reuse
+  mode.
 - Operator-controlled global prompt allowlist is mandatory for
   `global_system`.
-- Cache access audit log is mandatory.
-- Tenant deletion and GC path are mandatory.
-- Cache-hit probing and timing side channels must be addressed.
+- Cache access audit logging is mandatory. The current daemon and offline store
+  tool write redacted local `router-store/registry-audit.jsonl` rows; production
+  tamper-proof storage and distributed ordering remain future hardening.
+- Production tenant deletion and GC orchestration are mandatory before broad
+  multi-tenant claims; the current offline durable-store tool covers local
+  registry removal, tombstoning, GC queueing, and referenced-blob protection.
+- Cache-hit probing and timing side channels must be addressed; the current
+  daemon mitigation gates cache use by hashed tenant/scope metadata and
+  miss-masks denied compatible-cache lookups to clients while preserving
+  admin-only denial audit events.
 - Public benchmark logs must not include private prompts, secrets, raw tenant
   data, raw cache blobs, or full server logs.
 - Forged manifests, path traversal, partial publish, corrupt blobs, and stale

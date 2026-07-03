@@ -9,9 +9,13 @@ hygiene.
 
 ## Current Status
 
-Checklist only. No production router exists in this package, no route has been
-served through a cache-aware router, and no distributed cache correctness claim
-is allowed yet.
+Historical checklist. A trusted-LAN endpoint MVP and helper scripts now exist
+in this package, but this checklist remains useful for the remaining promotion
+gates. Do not treat the endpoint MVP as production routing, tenant isolation,
+or distributed cache correctness proof. Scoped no-MTP trusted-LAN suffix and
+restore correctness passes are retained as public-safe summaries, while
+MTP-enabled, restart, two-node, and logit/top-k validation remain separate
+promotion gates.
 
 ## Phase Gates
 
@@ -20,7 +24,7 @@ is allowed yet.
 | 0 capability audit | Existing source map reviewed against current upstream `llama.cpp` | Updated primitive classifications and no assumption that CachyLLama patches are required |
 | 1 single-node local prototype | Isolated temporary server or tiny mechanics-only model approved | Cold versus restored correctness report with strict key mismatch controls |
 | 2 two-node slot-file prototype | Two isolated compatible workers or process instances available | Node A save, Node B restore, checksum, logits/top-k/text comparison, and cleanup proof |
-| 3 sidecar and registry | Blob lifecycle and registry schema reviewed | Local inventory, hydration, upload, lease, residency, and eviction behavior captured |
+| 3 sidecar and registry | Blob lifecycle and registry schema reviewed | Local inventory, hydration, upload, sidecar-local eviction lease, registry lease design, residency, and eviction behavior captured |
 | 4 router MVP | Worker/sidecar/registry mocks or safe isolated workers exist | OpenAI-compatible request routed with hit/miss/fallback decision log |
 | 5 worker hooks | Upstream primitives proven insufficient | Minimal `/cache/*` hook proposal with patch size, ABI risk, and rollback path |
 | 6 production hardening | MVP correctness and benchmark evidence reviewed | Tenant policy, encryption, audit log, GC, backpressure, failover, and RPO/RTO tested |
@@ -53,6 +57,8 @@ Sidecar-facing:
 - `POST /hydrate`
 - `POST /upload`
 - `POST /evict`
+- `POST /leases/acquire`
+- `POST /leases/release`
 - `POST /verify`
 - `GET /health`
 
@@ -60,7 +66,7 @@ Registry-facing:
 
 - lookup compatible manifest;
 - publish verified manifest;
-- acquire/release lease;
+- acquire/release registry lease;
 - update residency;
 - mark blob corrupt;
 - expire/delete tenant scope;
@@ -153,9 +159,9 @@ multi-node evidence.
 | router can avoid cold prefill | restored TTFT plus processed-token/log evidence and cold control |
 | restore is correct | logits/top-k or deterministic text match plus mismatch controls |
 | multi-node reuse works | Node A save, durable upload, Node B hydrate/restore, and correctness comparison |
-| tenant isolation works | wrong-tenant lookup and restore are rejected and audited |
+| tenant/scope miss-masking works | wrong-tenant lookup and conversation-scope mismatches are rejected before hydrate/generation, admin-audited, and client-masked as a scoped miss; stronger tenant isolation still needs auth-derived tenant mapping and live multi-tenant probes |
 | durable blob store works | temp write, fsync, hash, upload, registry publish, verify, and GC evidence |
-| sidecar eviction is safe | evicted local cache self-heals through hydrate or cold prefill |
+| sidecar eviction/GC is production-safe | sidecar-local lease denial, stale-residency hydrate or cold-prefill recovery, and GC/reference tests |
 | production-ready routing exists | Phase 6 hardening evidence, not just MVP request success |
 
 ## Open Decisions

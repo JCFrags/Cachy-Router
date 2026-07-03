@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -60,6 +61,7 @@ DEFAULT_MODEL_NAME = "Step-3.7"
 DEFAULT_ROUTER_PORT = 18080
 DEFAULT_WORKER_PORT = 18082
 DEFAULT_CTX_SIZE = 65536
+DEFAULT_MMPROJ_MODEL = ""
 DATE_TAG = datetime.now().strftime("%Y-%m-%d")
 MUTATING_COMMANDS = {"start", "restart", "restart-router", "test", "start-worker", "stop-worker", "start-workers", "stop-workers"}
 
@@ -74,6 +76,20 @@ def json_dumps(value: Any) -> str:
 
 def is_loopback_bind(host: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def bool_value(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
 
 
 def remote_paths(args: argparse.Namespace) -> dict[str, str]:
@@ -104,6 +120,14 @@ def remote_paths(args: argparse.Namespace) -> dict[str, str]:
     }
 
 
+def remote_shell_path(path: str) -> str:
+    if path == "~":
+        return "${HOME}"
+    if path.startswith("~/"):
+        return "${HOME}/" + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
 def load_worker_inventory(path: str) -> list[dict[str, Any]]:
     if not path:
         raise ValueError("--workers-file is required for inventory worker commands")
@@ -124,6 +148,33 @@ def load_worker_inventory(path: str) -> list[dict[str, Any]]:
         seen.add(worker_id)
         result.append(row)
     return result
+
+
+def inventory_cache_storage(path: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        return {}
+    storage = raw.get("cache_storage")
+    return storage if isinstance(storage, dict) else {}
+
+
+def apply_inventory_storage_defaults(args: argparse.Namespace) -> None:
+    storage = inventory_cache_storage(args.workers_file) if getattr(args, "workers_file", "") else {}
+    if not args.remote_cache_root:
+        args.remote_cache_root = str(storage.get("cache_root") or DEFAULT_REMOTE_CACHE_ROOT)
+    encryption = storage.get("durable_blob_encryption_at_rest") if isinstance(storage.get("durable_blob_encryption_at_rest"), dict) else {}
+    if not encryption:
+        return
+    if not args.durable_blob_encryption_mode:
+        args.durable_blob_encryption_mode = str(encryption.get("mode") or "")
+    if not args.durable_blob_encryption_evidence_basis:
+        args.durable_blob_encryption_evidence_basis = str(encryption.get("evidence_basis") or "")
+    if not args.durable_blob_encryption_volume_id_hash:
+        args.durable_blob_encryption_volume_id_hash = str(encryption.get("volume_id_hash") or "")
+    if not args.durable_blob_encryption_key_owner:
+        args.durable_blob_encryption_key_owner = str(encryption.get("key_owner") or "")
 
 
 def url_port(value: str, default: int) -> int:
@@ -150,9 +201,26 @@ def inventory_worker_args(args: argparse.Namespace, row: dict[str, Any]) -> argp
         raise ValueError(f"worker {ns.worker_id} is missing slot_save_path")
     ns.llama_server = str(row.get("llama_server_path") or row.get("llama_server") or ns.llama_server)
     ns.model = str(row.get("model_path") or row.get("model_file") or row.get("model") or ns.model)
+    ns.mtp_enabled = bool_value(row.get("mtp_enabled"), ns.mtp_enabled)
     ns.mtp_model = str(row.get("spec_draft_model_path") or row.get("mtp_model") or row.get("draft_model_path") or ns.mtp_model)
+    ns.mmproj_model = str(row.get("mmproj_model_path") or row.get("mmproj_model") or row.get("mmproj_path") or ns.mmproj_model)
     if row.get("ctx_size") not in (None, ""):
         ns.ctx_size = int(row["ctx_size"])
+    if row.get("cache_ram_mib") not in (None, ""):
+        ns.cache_ram_mib = int(row["cache_ram_mib"])
+    if row.get("ctx_checkpoints") not in (None, ""):
+        ns.ctx_checkpoints = int(row["ctx_checkpoints"])
+    if row.get("spec_draft_n_max") not in (None, ""):
+        ns.spec_draft_n_max = int(row["spec_draft_n_max"])
+    if row.get("spec_draft_n_min") not in (None, ""):
+        ns.spec_draft_n_min = int(row["spec_draft_n_min"])
+    if row.get("spec_draft_p_split") not in (None, ""):
+        ns.spec_draft_p_split = str(row["spec_draft_p_split"])
+    if row.get("spec_draft_p_min") not in (None, ""):
+        ns.spec_draft_p_min = str(row["spec_draft_p_min"])
+    ns.spec_draft_type_k = str(row.get("spec_draft_type_k") or ns.spec_draft_type_k)
+    ns.spec_draft_type_v = str(row.get("spec_draft_type_v") or ns.spec_draft_type_v)
+    ns.spec_draft_ngl = str(row.get("spec_draft_ngl") or ns.spec_draft_ngl)
     return ns
 
 
@@ -319,13 +387,17 @@ def read_router_auth_token(args: argparse.Namespace) -> str:
 def remote_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     paths = remote_paths(args)
     model_info = remote_file_info(args.remote_host, args.model, hash_file=False, timeout=60)
-    mtp_info = remote_file_info(args.remote_host, args.mtp_model, hash_file=False, timeout=60)
+    mtp_info = (
+        remote_file_info(args.remote_host, args.mtp_model, hash_file=False, timeout=60)
+        if args.mtp_enabled
+        else {"exists": False, "skipped": True, "reason": "mtp_disabled"}
+    )
     root_parent = str(Path(paths["root"]).parent)
     payload = json.dumps({"root_parent": root_parent}, sort_keys=True)
     script = r'''
 import json, os, shutil, socket, subprocess
 payload = json.loads(PAYLOAD)
-df = shutil.disk_usage(payload["root_parent"])
+df = shutil.disk_usage(os.path.expanduser(payload["root_parent"]))
 mem = {}
 with open("/proc/meminfo", "r", encoding="utf-8") as fh:
     for line in fh:
@@ -348,6 +420,7 @@ print(json.dumps({
             "runtime_version": remote_runtime_version(args.remote_host, args.llama_server),
             "model_path": args.model,
             "model": model_info,
+            "mtp_enabled": args.mtp_enabled,
             "mtp_model_path": args.mtp_model,
             "mtp_model": mtp_info,
             "legacy_8081_pids": remote_find_server_by_port(args.remote_host, 8081),
@@ -387,7 +460,9 @@ def stage_daemon(args: argparse.Namespace) -> None:
         )
         if proc.returncode != 0:
             raise RuntimeError(f"failed to stage {source.name}: {proc.stdout}")
-    ssh_script(args.remote_host, f"chmod 700 {paths['daemon_remote']!r} {paths['router_dir'] + '/cache_router_transport.py'!r}", timeout=15)
+    daemon_remote = remote_shell_path(paths["daemon_remote"])
+    transport_remote = remote_shell_path(f"{paths['router_dir']}/cache_router_transport.py")
+    ssh_script(args.remote_host, f"chmod 700 {daemon_remote} {transport_remote}", timeout=15)
 
 
 def stage_sidecar(args: argparse.Namespace) -> None:
@@ -413,7 +488,7 @@ def stage_sidecar(args: argparse.Namespace) -> None:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"failed to stage {source.name}: {proc.stdout}")
-    ssh_script(args.remote_host, f"chmod 700 {paths['sidecar_remote']!r}", timeout=15)
+    ssh_script(args.remote_host, f"chmod 700 {remote_shell_path(paths['sidecar_remote'])}", timeout=15)
 
 
 def make_worker_argv(args: argparse.Namespace) -> list[str]:
@@ -422,15 +497,31 @@ def make_worker_argv(args: argparse.Namespace) -> list[str]:
         model=args.model,
         ctx_size=args.ctx_size,
         temp_port=args.worker_port,
+        mtp_enabled=args.mtp_enabled,
         mtp_model=args.mtp_model,
+        mmproj_model=args.mmproj_model,
+        cache_ram_mib=args.cache_ram_mib,
+        ctx_checkpoints=args.ctx_checkpoints,
+        spec_draft_n_max=args.spec_draft_n_max,
+        spec_draft_n_min=args.spec_draft_n_min,
+        spec_draft_p_split=args.spec_draft_p_split,
+        spec_draft_p_min=args.spec_draft_p_min,
+        spec_draft_type_k=args.spec_draft_type_k,
+        spec_draft_type_v=args.spec_draft_type_v,
+        spec_draft_ngl=args.spec_draft_ngl,
         worker_bind_host=args.worker_bind_host,
     )
-    return temp_server_argv(ns, worker_id=args.worker_id, slot_dir=remote_paths(args)["worker_slots"])
+    argv = temp_server_argv(ns, worker_id=args.worker_id, slot_dir=remote_paths(args)["worker_slots"])
+    for index, value in enumerate(argv[:-1]):
+        if value == "--alias":
+            argv[index + 1] = DEFAULT_MODEL_NAME
+            break
+    return argv
 
 
 def make_sidecar_argv(args: argparse.Namespace) -> list[str]:
     paths = remote_paths(args)
-    return [
+    argv = [
         "python3",
         paths["sidecar_remote"],
         "--host",
@@ -442,6 +533,9 @@ def make_sidecar_argv(args: argparse.Namespace) -> list[str]:
         "--slot-dir",
         paths["worker_slots"],
     ]
+    if args.allow_unauthenticated_lan:
+        argv.append("--allow-unauthenticated-lan")
+    return argv
 
 
 def make_router_argv(args: argparse.Namespace, snapshot: dict[str, Any]) -> list[str]:
@@ -479,11 +573,14 @@ def make_router_argv(args: argparse.Namespace, snapshot: dict[str, Any]) -> list
         "q8_0",
         "--cache-type-v",
         "q8_0",
-        "--mtp-enabled",
+        "--strict-metadata-force-runtime" if args.strict_metadata_force_runtime else "--no-strict-metadata-force-runtime",
+        "--mtp-enabled" if args.mtp_enabled else "--no-mtp-enabled",
         "--spec-draft-model-path",
-        args.mtp_model,
+        args.mtp_model if args.mtp_enabled else "none",
         "--spec-draft-model-size",
-        str((snapshot.get("mtp_model") or {}).get("size_bytes") or (snapshot.get("mtp_model") or {}).get("size") or 0),
+        str((snapshot.get("mtp_model") or {}).get("size_bytes") or (snapshot.get("mtp_model") or {}).get("size") or 0)
+        if args.mtp_enabled
+        else "0",
         "--slot-id",
         "0",
         "--timeout",
@@ -491,6 +588,34 @@ def make_router_argv(args: argparse.Namespace, snapshot: dict[str, Any]) -> list
     ]
     if args.router_auth:
         argv.extend(["--auth-token-file", paths["auth_token"]])
+    elif args.allow_unauthenticated_lan:
+        argv.append("--allow-unauthenticated-lan")
+    if args.production_router_mode:
+        argv.append("--production-mode")
+        if args.allow_production_router_admin_endpoints:
+            argv.append("--allow-production-admin-endpoints")
+    if args.disable_router_admin_endpoints:
+        argv.append("--disable-admin-endpoints")
+    if any(
+        [
+            args.durable_blob_encryption_mode,
+            args.durable_blob_encryption_evidence_basis,
+            args.durable_blob_encryption_volume_id_hash,
+            args.durable_blob_encryption_key_owner,
+        ]
+    ):
+        argv.extend(
+            [
+                "--durable-blob-encryption-mode",
+                args.durable_blob_encryption_mode,
+                "--durable-blob-encryption-evidence-basis",
+                args.durable_blob_encryption_evidence_basis,
+                "--durable-blob-encryption-volume-id-hash",
+                args.durable_blob_encryption_volume_id_hash,
+                "--durable-blob-encryption-key-owner",
+                args.durable_blob_encryption_key_owner,
+            ]
+        )
     if args.workers_file:
         argv.extend(["--workers-file", paths["workers_file"]])
     if args.worker_ssh_host:
@@ -589,10 +714,14 @@ def start_worker_only(args: argparse.Namespace) -> dict[str, Any]:
     if port_pids:
         raise RuntimeError(f"worker port {args.worker_port} is already in use on {args.remote_host}: {port_pids}")
     model_info = remote_file_info(args.remote_host, args.model, hash_file=False, timeout=60)
-    mtp_info = remote_file_info(args.remote_host, args.mtp_model, hash_file=False, timeout=60)
+    mtp_info = (
+        remote_file_info(args.remote_host, args.mtp_model, hash_file=False, timeout=60)
+        if args.mtp_enabled
+        else {"exists": False, "skipped": True, "reason": "mtp_disabled"}
+    )
     if not model_info.get("exists"):
         raise RuntimeError(f"model path missing on {args.remote_host}: {args.model}")
-    if not mtp_info.get("exists"):
+    if args.mtp_enabled and not mtp_info.get("exists"):
         raise RuntimeError(f"MTP model path missing on {args.remote_host}: {args.mtp_model}")
     worker = start_worker(args)
     sidecar = start_sidecar(args) if args.start_sidecar else {"skipped": True}
@@ -1181,9 +1310,16 @@ def parse_args() -> argparse.Namespace:
             default=os.environ.get("CACHE_ROUTER_SCP_EXTRA_ARGS", ""),
             help="Optional extra SCP args parsed with shlex for daemon staging.",
         )
-        p.add_argument("--remote-cache-root", default=DEFAULT_REMOTE_CACHE_ROOT)
+        p.add_argument("--remote-cache-root", default="", help="Remote cache root. Defaults to cache_storage.cache_root from --workers-file, then ~/.cache/cachy-router.")
+        p.add_argument("--durable-blob-encryption-mode", default="", choices=["", "operator_managed_encrypted_filesystem", "platform_encrypted_volume"], help="Pass operator-attested durable blob encryption-at-rest mode to the router daemon.")
+        p.add_argument("--durable-blob-encryption-evidence-basis", default="", choices=["", "operator_attestation", "setup_doctor_metadata"], help="Pass durable blob encryption evidence basis to the router daemon.")
+        p.add_argument("--durable-blob-encryption-volume-id-hash", default="", help="SHA-256 digest of the encrypted cache-root volume identifier; do not pass raw volume names or keys.")
+        p.add_argument("--durable-blob-encryption-key-owner", default="", help="Short non-secret operator/platform key owner label for the router daemon.")
         p.add_argument("--router-host", default="127.0.0.1")
         p.add_argument("--router-auth", action=argparse.BooleanOptionalAction, default=None)
+        p.add_argument("--production-router-mode", action="store_true", help="Run the router daemon with --production-mode; implies --router-auth and disables admin endpoints unless explicitly allowed.")
+        p.add_argument("--allow-production-router-admin-endpoints", action="store_true", help="Keep authenticated router admin endpoints enabled when --production-router-mode is used.")
+        p.add_argument("--disable-router-admin-endpoints", action="store_true", help="Pass --disable-admin-endpoints to the router daemon.")
         p.add_argument(
             "--allow-unauthenticated-lan",
             action="store_true",
@@ -1193,17 +1329,38 @@ def parse_args() -> argparse.Namespace:
         p.add_argument("--worker-port", type=int, default=DEFAULT_WORKER_PORT)
         p.add_argument("--worker-id", default="worker-main")
         p.add_argument("--workers-file", default="", help="Optional local JSON worker inventory to stage for the router daemon.")
-        p.add_argument("--worker-bind-host", default="127.0.0.1", help="Bind address for router-managed llama-server workers started by this tool.")
+        p.add_argument(
+            "--worker-bind-host",
+            default="127.0.0.1",
+            help="Bind address for router-managed llama-server workers. Non-loopback binds require --allow-unauthenticated-lan and are for trusted private LANs only.",
+        )
         p.add_argument("--worker-transport", choices=["local", "ssh", "http"], default="local")
         p.add_argument("--worker-ssh-host", default="")
         p.add_argument("--worker-sidecar-url", default="", help="Sidecar URL for --worker-transport http.")
         p.add_argument("--sidecar-bind-host", default="127.0.0.1", help="Bind address for the worker-local slot sidecar.")
         p.add_argument("--sidecar-port", type=int, default=18083)
         p.add_argument("--start-sidecar", action=argparse.BooleanOptionalAction, default=True)
+        p.add_argument("--strict-metadata-force-runtime", action=argparse.BooleanOptionalAction, default=True, help="Pass runtime-forced strict metadata derivation to the router daemon.")
         p.add_argument("--llama-server", default=DEFAULT_RUNTIME)
         p.add_argument("--model", default=DEFAULT_MODEL)
+        p.add_argument(
+            "--mtp-enabled",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Launch and advertise an MTP/speculative draft model. Use --no-mtp-enabled for deterministic correctness-validation workers.",
+        )
         p.add_argument("--mtp-model", default=DEFAULT_MTP_MODEL)
+        p.add_argument("--mmproj-model", default=DEFAULT_MMPROJ_MODEL)
         p.add_argument("--ctx-size", type=int, default=DEFAULT_CTX_SIZE)
+        p.add_argument("--cache-ram-mib", type=int, default=0)
+        p.add_argument("--ctx-checkpoints", type=int, default=0)
+        p.add_argument("--spec-draft-n-max", type=int, default=2)
+        p.add_argument("--spec-draft-n-min", type=int, default=0)
+        p.add_argument("--spec-draft-p-split", default="0.10")
+        p.add_argument("--spec-draft-p-min", default="0.60")
+        p.add_argument("--spec-draft-type-k", default="q8_0")
+        p.add_argument("--spec-draft-type-v", default="q8_0")
+        p.add_argument("--spec-draft-ngl", default="all")
         p.add_argument("--timeout", type=float, default=900.0)
         p.add_argument("--ready-timeout", type=float, default=900.0)
 
@@ -1262,6 +1419,13 @@ def parse_args() -> argparse.Namespace:
         os.environ["CACHE_ROUTER_SSH_EXTRA_ARGS"] = args.ssh_extra_args
     if args.scp_extra_args:
         os.environ["CACHE_ROUTER_SCP_EXTRA_ARGS"] = args.scp_extra_args
+    apply_inventory_storage_defaults(args)
+    if args.production_router_mode:
+        if args.router_auth is False:
+            raise SystemExit("--production-router-mode requires router auth; do not combine it with --no-router-auth")
+        if args.allow_unauthenticated_lan:
+            raise SystemExit("--production-router-mode cannot be combined with --allow-unauthenticated-lan")
+        args.router_auth = True
     if args.router_auth is None:
         args.router_auth = False
     if (
@@ -1285,7 +1449,16 @@ def parse_args() -> argparse.Namespace:
             "--sidecar-bind-host is not loopback. Use --allow-unauthenticated-lan "
             "for an explicit trusted-LAN worker sidecar, or bind the sidecar to loopback."
         )
-    if hasattr(args, "remote_host") and not args.remote_host:
+    if (
+        args.command in {"start-worker", "start-workers", "start", "restart", "test"}
+        and not is_loopback_bind(args.worker_bind_host)
+        and not args.allow_unauthenticated_lan
+    ):
+        raise SystemExit(
+            "--worker-bind-host is not loopback. Use --allow-unauthenticated-lan "
+            "for an explicit trusted-LAN llama-server worker, or bind the worker to loopback."
+        )
+    if hasattr(args, "remote_host") and not args.remote_host and args.command not in {"workers-status", "start-workers", "stop-workers"}:
         raise SystemExit("--remote-host is required for live stack commands")
     if args.command in {"status", "restart-router", "worker-status", "start-worker", "stop-worker", "workers-status", "start-workers", "stop-workers"}:
         args.stop_legacy_8081 = False

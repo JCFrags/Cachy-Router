@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import posixpath
 import sys
 import time
@@ -23,7 +24,7 @@ from typing import Any
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT / "scripts"))
 
-from cache_router_one_node_poc import generate_prefix, sha256_text, write_json  # noqa: E402
+from cache_router_one_node_poc import make_prefix, sha256_text, write_json  # noqa: E402
 from cache_router_remote_stack import remote_file_info, remote_move_if_exists  # noqa: E402
 
 
@@ -35,9 +36,18 @@ def json_dumps(value: Any) -> str:
     return json.dumps(value, indent=2, sort_keys=True) + "\n"
 
 
-def http_json(method: str, url: str, body: dict[str, Any] | None = None, *, timeout: float = 900.0) -> tuple[int, dict[str, Any], float]:
+def http_json(
+    method: str,
+    url: str,
+    body: dict[str, Any] | None = None,
+    *,
+    timeout: float = 900.0,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, dict[str, Any], float]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
+    for key, value in (headers or {}).items():
+        req.add_header(key, value)
     if body is not None:
         req.add_header("Content-Type", "application/json")
     start = time.perf_counter()
@@ -55,6 +65,60 @@ def http_json(method: str, url: str, body: dict[str, Any] | None = None, *, time
         except json.JSONDecodeError:
             parsed = {"raw": raw}
         return exc.code, parsed, elapsed
+
+
+def auth_headers(args: argparse.Namespace) -> dict[str, str]:
+    token = args.api_key.strip()
+    if not token and args.api_key_file:
+        token = Path(args.api_key_file).read_text(encoding="utf-8").strip()
+    if not token:
+        return {}
+    if args.auth_header == "x-api-key":
+        return {"X-API-Key": token}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def token_count(base_url: str, content: str, timeout: float, headers: dict[str, str]) -> int:
+    attempts = [
+        {"content": content, "add_special": False},
+        {"content": content},
+        {"prompt": content},
+    ]
+    last_body: Any = None
+    for payload in attempts:
+        status, body, _ = http_json("POST", base_url.rstrip("/") + "/tokenize", payload, timeout=timeout, headers=headers)
+        last_body = body
+        if status >= 400:
+            continue
+        if isinstance(body, dict):
+            tokens = body.get("tokens")
+            if isinstance(tokens, list):
+                return len(tokens)
+            if isinstance(tokens, int):
+                return tokens
+        if isinstance(body, list):
+            return len(body)
+    raise RuntimeError(f"/tokenize did not return tokens; last response={last_body!r}")
+
+
+def generate_prefix(base_url: str, target_tokens: int, timeout: float, headers: dict[str, str]) -> tuple[str, int, int]:
+    unit_tokens = max(1, token_count(base_url, make_prefix(1), timeout, headers))
+    repeats = max(1, math.ceil(target_tokens / unit_tokens))
+    best_text = make_prefix(repeats)
+    best_tokens = token_count(base_url, best_text, timeout, headers)
+    for _ in range(8):
+        if abs(best_tokens - target_tokens) <= max(256, int(target_tokens * 0.015)):
+            break
+        next_repeats = max(1, round(repeats * (target_tokens / max(1, best_tokens))))
+        if next_repeats == repeats:
+            next_repeats += 1 if best_tokens < target_tokens else -1
+            next_repeats = max(1, next_repeats)
+        repeats = next_repeats
+        candidate = make_prefix(repeats)
+        candidate_tokens = token_count(base_url, candidate, timeout, headers)
+        if abs(candidate_tokens - target_tokens) <= abs(best_tokens - target_tokens):
+            best_text, best_tokens = candidate, candidate_tokens
+    return best_text, best_tokens, repeats
 
 
 def cache_meta(response: dict[str, Any], key: str) -> dict[str, Any]:
@@ -267,7 +331,10 @@ def write_readme(out_dir: Path, results: dict[str, Any]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-url", default="", help="Router base URL, for example http://192.168.1.10:18080.")
+    parser.add_argument("--base-url", default="", help="Router base URL, for example http://<router-lan-ip>:18080.")
+    parser.add_argument("--api-key", default="", help="Optional router API key/bearer token for authenticated routers.")
+    parser.add_argument("--api-key-file", default="", help="Optional file containing the router API key/bearer token.")
+    parser.add_argument("--auth-header", choices=["bearer", "x-api-key"], default="bearer", help="Header style for --api-key.")
     parser.add_argument("--source-worker-id", default="worker-a")
     parser.add_argument("--target-worker-id", default="worker-b")
     parser.add_argument("--target-tokens", type=int, default=30000)
@@ -294,11 +361,12 @@ def main() -> int:
     out_dir = Path(args.out_dir or PACKAGE_ROOT / "data" / "cache_router_poc" / f"{datetime.now().strftime('%Y-%m-%d')}-two-worker-router")
     out_dir.mkdir(parents=True, exist_ok=True)
     base = args.base_url.rstrip("/")
-    prefix, prefix_tokens, repeats = generate_prefix(base, args.target_tokens, args.timeout)
+    headers = auth_headers(args)
+    prefix, prefix_tokens, repeats = generate_prefix(base, args.target_tokens, args.timeout, headers)
     prefix_hash = sha256_text(prefix)
 
-    health_status, health, health_ms = http_json("GET", base + "/health", timeout=args.timeout)
-    workers_status, workers, workers_ms = http_json("GET", base + "/router/workers", timeout=args.timeout)
+    health_status, health, health_ms = http_json("GET", base + "/health", timeout=args.timeout, headers=headers)
+    workers_status, workers, workers_ms = http_json("GET", base + "/router/workers", timeout=args.timeout, headers=headers)
     if health_status != 200 or workers_status != 200:
         raise RuntimeError(f"router not healthy: health={health_status} workers={workers_status}")
 
@@ -314,6 +382,7 @@ def main() -> int:
             max_tokens=1,
         ),
         timeout=args.timeout,
+        headers=headers,
     )
     if build_status != 200:
         raise RuntimeError(f"cache build failed HTTP {build_status}: {build_response}")
@@ -331,6 +400,7 @@ def main() -> int:
             max_tokens=8,
         ),
         timeout=args.timeout,
+        headers=headers,
     )
     if native_status != 200:
         raise RuntimeError(f"native source cache use failed HTTP {native_status}: {native_response}")
@@ -347,6 +417,7 @@ def main() -> int:
             max_tokens=8,
         ),
         timeout=args.timeout,
+        headers=headers,
     )
     if hydrated_status != 200:
         raise RuntimeError(f"target worker cache use failed HTTP {hydrated_status}: {hydrated_response}")
@@ -363,6 +434,7 @@ def main() -> int:
             max_tokens=8,
         ),
         timeout=args.timeout,
+        headers=headers,
     )
     if hot_status != 200:
         raise RuntimeError(f"target worker hot cache use failed HTTP {hot_status}: {hot_response}")
@@ -389,12 +461,13 @@ def main() -> int:
                 max_tokens=8,
             ),
             timeout=args.timeout,
+            headers=headers,
         )
         if forced_status != 200:
             raise RuntimeError(f"target worker forced rehydrate failed HTTP {forced_status}: {forced_response}")
         forced_rehydrate = route_times(cache_meta(forced_response, "use"))
 
-    decisions_status, decisions, decisions_ms = http_json("GET", base + "/router/decisions", timeout=args.timeout)
+    decisions_status, decisions, decisions_ms = http_json("GET", base + "/router/decisions", timeout=args.timeout, headers=headers)
     cold_prompt_ms = float(build.get("build_prompt_ms") or 0.0)
     reductions = {
         "native_hot_source_worker": route_reductions(cold_prompt_ms, native),
@@ -410,6 +483,7 @@ def main() -> int:
         "schema_version": "2026-07-01.1",
         "created_utc": now_iso(),
         "router_base_url": base,
+        "router_auth": {"configured": bool(headers), "header": args.auth_header if headers else "none"},
         "source_worker_id": args.source_worker_id,
         "target_worker_id": args.target_worker_id,
         "cache_id": cache_id,

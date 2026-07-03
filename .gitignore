@@ -33,6 +33,7 @@ secrets.*
 # Private deployment inventories
 configs/cache-router/*.local.json
 configs/cache-router/local*.json
+configs/cache-router/*.workers.json
 
 # Model and cache artifacts
 *.gguf

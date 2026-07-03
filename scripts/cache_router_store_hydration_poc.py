@@ -572,7 +572,7 @@ def stop_tunnel(proc: subprocess.Popen[str] | None) -> None:
 
 
 def temp_server_argv(args: argparse.Namespace, *, worker_id: str, slot_dir: str) -> list[str]:
-    return [
+    argv = [
         args.llama_server,
         "-dev",
         "Vulkan0",
@@ -613,7 +613,7 @@ def temp_server_argv(args: argparse.Namespace, *, worker_id: str, slot_dir: str)
         "--slot-save-path",
         slot_dir,
         "--cache-ram",
-        "0",
+        str(getattr(args, "cache_ram_mib", 0)),
         "--cache-prompt",
         "--cache-reuse",
         "0",
@@ -626,22 +626,41 @@ def temp_server_argv(args: argparse.Namespace, *, worker_id: str, slot_dir: str)
         "--no-cache-idle-slots",
         "--no-context-shift",
         "--ctx-checkpoints",
-        "0",
+        str(getattr(args, "ctx_checkpoints", 0)),
         "--reasoning",
         "auto",
         "--reasoning-format",
         "deepseek",
-        "--spec-draft-model",
-        args.mtp_model,
-        "--spec-type",
-        "draft-mtp",
-        "--spec-draft-n-max",
-        "2",
-        "--spec-draft-p-min",
-        "0.60",
-        "-fit",
-        "off",
     ]
+    if getattr(args, "mtp_enabled", True):
+        argv.extend(
+            [
+                "--spec-draft-model",
+                args.mtp_model,
+                "--spec-type",
+                "draft-mtp",
+                "--spec-draft-n-max",
+                str(getattr(args, "spec_draft_n_max", 2)),
+                "--spec-draft-n-min",
+                str(getattr(args, "spec_draft_n_min", 0)),
+                "--spec-draft-p-split",
+                str(getattr(args, "spec_draft_p_split", "0.10")),
+                "--spec-draft-p-min",
+                str(getattr(args, "spec_draft_p_min", "0.60")),
+                "--spec-draft-type-k",
+                str(getattr(args, "spec_draft_type_k", "q8_0")),
+                "--spec-draft-type-v",
+                str(getattr(args, "spec_draft_type_v", "q8_0")),
+                "--spec-draft-backend-sampling",
+                "--spec-draft-ngl",
+                str(getattr(args, "spec_draft_ngl", "all")),
+            ]
+        )
+    argv.extend(["-fit", "off"])
+    mmproj_model = str(getattr(args, "mmproj_model", "") or "")
+    if mmproj_model:
+        argv.extend(["--mmproj", mmproj_model, "--mmproj-offload"])
+    return argv
 
 
 def save_service_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
@@ -670,7 +689,7 @@ def save_service_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
         f"- temp port listener after cleanup: {snapshot.get('temp_port_listener')}",
         "",
         "Operational caveat:",
-        "- If the final unit state is inactive but /health is ok, 8081 was restored as a manual connorb process.",
+        "- If the final unit state is inactive but /health is ok, 8081 was restored as a manual user-owned process.",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

@@ -184,7 +184,7 @@ def write_readme(out_dir: Path, results: dict[str, Any]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-url", default="", help="Router base URL, for example http://192.168.1.10:18080.")
+    parser.add_argument("--base-url", default="", help="Router base URL, for example http://<router-lan-ip>:18080.")
     parser.add_argument("--busy-worker-id", default="worker-a")
     parser.add_argument("--expected-fallback-worker-id", default="worker-b")
     parser.add_argument("--target-tokens", type=int, default=10000)

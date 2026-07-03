@@ -56,7 +56,12 @@
         "source_commit",
         "build_id",
         "cache_abi_version",
-        "patchset_id"
+        "patchset_id",
+        "rope_freq_base",
+        "rope_freq_scale",
+        "yarn_or_rope_scaling_metadata",
+        "n_parallel",
+        "n_seq_max"
       ],
       "properties": {
         "family": {
@@ -81,6 +86,23 @@
         },
         "patchset_id": {
           "$ref": "#/$defs/non_empty_string"
+        },
+        "rope_freq_base": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "rope_freq_scale": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "yarn_or_rope_scaling_metadata": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "n_parallel": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "n_seq_max": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },
@@ -124,6 +146,9 @@
           "gguf_tensor_manifest_hash",
           "tokenizer_hash",
           "chat_template_effective_hash",
+          "tools_schema_hash",
+          "system_prompt_hash",
+          "special_token_policy",
           "max_ctx_size",
           "mtp_supported"
         ],
@@ -145,6 +170,15 @@
           },
           "chat_template_effective_hash": {
             "$ref": "#/$defs/sha256_hex"
+          },
+          "tools_schema_hash": {
+            "$ref": "#/$defs/sha256_hex"
+          },
+          "system_prompt_hash": {
+            "$ref": "#/$defs/sha256_hex"
+          },
+          "special_token_policy": {
+            "$ref": "#/$defs/non_empty_string"
           },
           "max_ctx_size": {
             "type": "integer",

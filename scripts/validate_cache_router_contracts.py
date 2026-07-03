@@ -107,9 +107,11 @@ SAFE_PRIVACY_KEYS = {
     "raw_tenant_id_logged",
     "request_hash",
     "special_token_policy",
+    "system_prompt_hash",
     "tenant_hash",
     "token_prefix_hash",
     "tokenizer_hash",
+    "tools_schema_hash",
 }
 FORBIDDEN_PATH_PARTS = {
     "cache_blobs",
@@ -137,6 +139,7 @@ CACHE_POSITIVE_DECISIONS = {
     "hot_local_hit",
     "restore_then_generate",
 }
+AUDIT_ACTIONS = {"lookup", "hit", "miss", "restore", "commit", "fallback", "denial"}
 QUARANTINE_FAILURE_REASONS = {
     "checksum_mismatch",
     "deterministic_text_mismatch",
@@ -155,12 +158,17 @@ CORRECTNESS_CHECKS = {
 UNKNOWN_VALUES = {"unknown", "not_captured", "not_interpreted"}
 APPROVED_SCOPES = {"global_system", "tenant", "conversation", "private_disabled"}
 STRICT_COMPATIBILITY_FIELDS = [
+    "model_architecture",
     "model_hash",
     "gguf_tensor_manifest_hash",
     "tokenizer_hash",
     "chat_template_effective_hash",
+    "tools_schema_hash",
+    "system_prompt_hash",
+    "special_token_policy",
     "llama_cpp_source_commit",
     "llama_cpp_cache_abi_version",
+    "patchset_id",
     "build_backend",
     "gpu_backend_driver",
     "kv_unified_mode",
@@ -169,28 +177,26 @@ STRICT_COMPATIBILITY_FIELDS = [
     "cache_type_k",
     "cache_type_v",
     "flash_attention_mode",
+    "rope_freq_base",
+    "rope_freq_scale",
+    "yarn_or_rope_scaling_metadata",
     "reasoning_format",
     "jinja_template_mode",
     "mtp_enabled",
     "spec_draft_model_hash",
     "spec_draft_config",
-]
-OPTIONAL_STRICT_COMPATIBILITY_FIELDS = [
-    "model_architecture",
-    "special_token_policy",
-    "patchset_id",
-    "rope_freq_base",
-    "rope_freq_scale",
-    "yarn_or_rope_scaling_metadata",
     "n_parallel",
     "n_seq_max",
 ]
+OPTIONAL_STRICT_COMPATIBILITY_FIELDS: list[str] = []
 ALL_STRICT_COMPATIBILITY_FIELDS = STRICT_COMPATIBILITY_FIELDS + OPTIONAL_STRICT_COMPATIBILITY_FIELDS
 SHA_COMPATIBILITY_FIELDS = {
     "model_hash",
     "gguf_tensor_manifest_hash",
     "tokenizer_hash",
     "chat_template_effective_hash",
+    "tools_schema_hash",
+    "system_prompt_hash",
     "spec_draft_model_hash",
 }
 BOOLEAN_COMPATIBILITY_FIELDS = {"kv_unified_mode", "mtp_enabled"}
@@ -497,6 +503,23 @@ def validate_decision_event(row: dict[str, Any], schema: dict[str, Any], source:
     manifest_id = row.get("manifest_id")
     validation_status = row.get("validation_status")
     cache_hit_level = row.get("cache_hit_level")
+    audit_actions = row.get("audit_actions")
+
+    if not isinstance(audit_actions, list) or not audit_actions:
+        errors.append(f"{source}: audit_actions must be a non-empty list")
+    else:
+        seen_actions: set[str] = set()
+        for action in audit_actions:
+            if action not in AUDIT_ACTIONS:
+                errors.append(f"{source}: invalid audit action {action!r}")
+                continue
+            if action in seen_actions:
+                errors.append(f"{source}: duplicate audit action {action!r}")
+            seen_actions.add(action)
+        expected_actions = expected_audit_actions(row)
+        missing_actions = [action for action in expected_actions if action not in seen_actions]
+        if missing_actions:
+            errors.append(f"{source}: audit_actions missing expected actions {missing_actions}")
 
     if decision in CACHE_DEPENDENT_DECISIONS or phase in CACHE_DEPENDENT_PHASES:
         if not cache_key_hash:
@@ -542,6 +565,31 @@ def validate_decision_event(row: dict[str, Any], schema: dict[str, Any], source:
         if reuse_ratio is not None and not (isinstance(reuse_ratio, (int, float)) and not isinstance(reuse_ratio, bool) and 0 <= reuse_ratio <= 1):
             errors.append(f"{source}: metrics.reuse_ratio must be between 0 and 1 or null")
     return errors
+
+
+def expected_audit_actions(row: dict[str, Any]) -> list[str]:
+    phase = row.get("phase")
+    decision = row.get("decision")
+    cache_hit_level = row.get("cache_hit_level")
+    compatibility = row.get("compatibility_result")
+    fallback_required = row.get("fallback_required")
+    fallback_reason = row.get("fallback_reason")
+    actions: set[str] = set()
+    if phase == "registry_lookup" or cache_hit_level in {"registry_only", "local_nvme", "durable_blob"}:
+        actions.add("lookup")
+    if phase == "cache_commit_published":
+        actions.add("commit")
+    if decision in {"hot_local_hit", "durable_hit_hydrate", "restore_then_generate"} and cache_hit_level in {"local_nvme", "durable_blob"}:
+        actions.add("hit")
+    if compatibility == "miss" or fallback_reason == "no_compatible_manifest":
+        actions.add("miss")
+    if decision in {"restore_then_generate", "fallback_after_restore_failure"} or phase in {"restore_requested", "restore_validated"}:
+        actions.add("restore")
+    if fallback_required is True or decision in {"fallback_after_restore_failure", "cold_prefill"}:
+        actions.add("fallback")
+    if decision == "reject_policy" or compatibility == "policy_denied" or fallback_reason == "policy_denied":
+        actions.add("denial")
+    return [action for action in ["lookup", "hit", "miss", "restore", "commit", "fallback", "denial"] if action in actions]
 
 
 def validate_validation_result(row: dict[str, Any], schema: dict[str, Any], source: str) -> list[str]:
@@ -950,6 +998,7 @@ def validate_replay_fixture_dir(
     policies = load_jsonl(policies_path)
     expected = load_jsonl(expected_path)
     strict_rows = load_jsonl(strict_key_negatives_path) if strict_key_negatives_path.exists() else []
+    replay_audit_actions: set[str] = set()
 
     for index, row in enumerate(requests, start=1):
         errors.extend(validate_replay_request(row, f"{rel(requests_path)}:{index}"))
@@ -975,6 +1024,8 @@ def validate_replay_fixture_dir(
     if mock_output_path.exists():
         for index, row in enumerate(load_jsonl(mock_output_path), start=1):
             errors.extend(validate_decision_event(row, decision_schema, f"{rel(mock_output_path)}:{index}"))
+            if isinstance(row.get("audit_actions"), list):
+                replay_audit_actions.update(str(action) for action in row["audit_actions"])
 
     request_by_id = {row["request_id"]: row for row in requests if "request_id" in row}
     manifest_by_id = {row["manifest_id"]: row for row in registry if "manifest_id" in row}
@@ -1016,6 +1067,7 @@ def validate_replay_fixture_dir(
         "replay_workers": len(workers),
         "replay_registry_manifests": len(registry),
         "replay_policies": len(policies),
+        "audit_actions": sorted(replay_audit_actions),
         "strict_key_negative_fixtures": len(strict_rows),
         "strict_key_negative_fixtures_rejected": len(rejected_strict_rows),
         "uses_jsonschema": False,
@@ -1060,6 +1112,13 @@ def validate_all() -> dict[str, Any]:
             continue
         rejected.append(str(fixture.get("fixture_id")))
     errors.extend(replay_summary["errors"])
+    audit_actions = set(replay_summary.get("audit_actions", []))
+    for row in decisions:
+        if isinstance(row.get("audit_actions"), list):
+            audit_actions.update(str(action) for action in row["audit_actions"])
+    missing_audit_actions = sorted(AUDIT_ACTIONS - audit_actions)
+    if missing_audit_actions:
+        errors.append(f"decision fixtures must cover audit actions: missing {missing_audit_actions}")
 
     return {
         "ok": not errors,
@@ -1072,6 +1131,7 @@ def validate_all() -> dict[str, Any]:
         "replay_workers": replay_summary["replay_workers"],
         "replay_registry_manifests": replay_summary["replay_registry_manifests"],
         "replay_policies": replay_summary["replay_policies"],
+        "audit_actions_covered": sorted(audit_actions),
         "strict_key_negative_fixtures": replay_summary["strict_key_negative_fixtures"],
         "strict_key_negative_fixtures_rejected": replay_summary["strict_key_negative_fixtures_rejected"],
         "rejected_fixture_ids": rejected,
