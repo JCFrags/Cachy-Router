@@ -92,6 +92,11 @@ def bool_value(value: Any, default: bool) -> bool:
     return default
 
 
+def path_like(value: Any) -> bool:
+    text = str(value or "")
+    return "/" in text or text.startswith(".") or text.endswith(".gguf")
+
+
 def remote_paths(args: argparse.Namespace) -> dict[str, str]:
     root = args.remote_cache_root.rstrip("/")
     worker_id = getattr(args, "worker_id", "worker-main")
@@ -200,7 +205,17 @@ def inventory_worker_args(args: argparse.Namespace, row: dict[str, Any]) -> argp
     if not ns.worker_slot_dir_override:
         raise ValueError(f"worker {ns.worker_id} is missing slot_save_path")
     ns.llama_server = str(row.get("llama_server_path") or row.get("llama_server") or ns.llama_server)
-    ns.model = str(row.get("model_path") or row.get("model_file") or row.get("model") or ns.model)
+    legacy_model = row.get("model")
+    row_model_name = str(row.get("model_name") or row.get("alias") or "")
+    if not row_model_name and legacy_model and not path_like(legacy_model):
+        row_model_name = str(legacy_model)
+    if row_model_name:
+        ns.model_name = row_model_name
+    row_model_path = str(row.get("model_path") or row.get("model_file") or "")
+    if not row_model_path and legacy_model and path_like(legacy_model):
+        row_model_path = str(legacy_model)
+    if row_model_path:
+        ns.model = row_model_path
     ns.mtp_enabled = bool_value(row.get("mtp_enabled"), ns.mtp_enabled)
     ns.mtp_model = str(row.get("spec_draft_model_path") or row.get("mtp_model") or row.get("draft_model_path") or ns.mtp_model)
     ns.mmproj_model = str(row.get("mmproj_model_path") or row.get("mmproj_model") or row.get("mmproj_path") or ns.mmproj_model)
@@ -208,6 +223,15 @@ def inventory_worker_args(args: argparse.Namespace, row: dict[str, Any]) -> argp
         ns.ctx_size = int(row["ctx_size"])
     if row.get("cache_ram_mib") not in (None, ""):
         ns.cache_ram_mib = int(row["cache_ram_mib"])
+    ns.cache_type_k = str(row.get("cache_type_k") or ns.cache_type_k)
+    ns.cache_type_v = str(row.get("cache_type_v") or ns.cache_type_v)
+    if row.get("threads") not in (None, ""):
+        ns.threads = int(row["threads"])
+    if row.get("threads_http") not in (None, ""):
+        ns.threads_http = int(row["threads_http"])
+    ns.gpu_dpm_force_performance_level = str(
+        row.get("gpu_dpm_force_performance_level") or ns.gpu_dpm_force_performance_level
+    )
     if row.get("ctx_checkpoints") not in (None, ""):
         ns.ctx_checkpoints = int(row["ctx_checkpoints"])
     if row.get("spec_draft_n_max") not in (None, ""):
@@ -496,6 +520,10 @@ def make_worker_argv(args: argparse.Namespace) -> list[str]:
         llama_server=args.llama_server,
         model=args.model,
         ctx_size=args.ctx_size,
+        cache_type_k=args.cache_type_k,
+        cache_type_v=args.cache_type_v,
+        threads=args.threads,
+        threads_http=args.threads_http,
         temp_port=args.worker_port,
         mtp_enabled=args.mtp_enabled,
         mtp_model=args.mtp_model,
@@ -514,7 +542,7 @@ def make_worker_argv(args: argparse.Namespace) -> list[str]:
     argv = temp_server_argv(ns, worker_id=args.worker_id, slot_dir=remote_paths(args)["worker_slots"])
     for index, value in enumerate(argv[:-1]):
         if value == "--alias":
-            argv[index + 1] = DEFAULT_MODEL_NAME
+            argv[index + 1] = args.model_name
             break
     return argv
 
@@ -547,45 +575,52 @@ def make_router_argv(args: argparse.Namespace, snapshot: dict[str, Any]) -> list
         args.router_host,
         "--port",
         str(args.router_port),
-        "--worker-url",
-        f"http://127.0.0.1:{args.worker_port}",
-        "--worker-id",
-        args.worker_id,
         "--cache-root",
         paths["root"],
-        "--worker-slot-dir",
-        paths["worker_slots"],
-        "--worker-transport",
-        args.worker_transport,
-        "--model",
-        DEFAULT_MODEL_NAME,
-        "--model-path",
-        args.model,
-        "--model-file-size",
-        str((snapshot.get("model") or {}).get("size_bytes") or (snapshot.get("model") or {}).get("size") or 0),
-        "--llama-server-path",
-        args.llama_server,
-        "--llama-server-version",
-        str(snapshot.get("runtime_version") or "unknown"),
-        "--ctx-size",
-        str(args.ctx_size),
-        "--cache-type-k",
-        "q8_0",
-        "--cache-type-v",
-        "q8_0",
         "--strict-metadata-force-runtime" if args.strict_metadata_force_runtime else "--no-strict-metadata-force-runtime",
-        "--mtp-enabled" if args.mtp_enabled else "--no-mtp-enabled",
-        "--spec-draft-model-path",
-        args.mtp_model if args.mtp_enabled else "none",
-        "--spec-draft-model-size",
-        str((snapshot.get("mtp_model") or {}).get("size_bytes") or (snapshot.get("mtp_model") or {}).get("size") or 0)
-        if args.mtp_enabled
-        else "0",
-        "--slot-id",
-        "0",
         "--timeout",
         str(args.timeout),
     ]
+    if args.workers_file:
+        argv.extend(["--workers-file", paths["workers_file"]])
+    else:
+        argv.extend(
+            [
+                "--worker-url",
+                f"http://127.0.0.1:{args.worker_port}",
+                "--worker-id",
+                args.worker_id,
+                "--worker-slot-dir",
+                paths["worker_slots"],
+                "--worker-transport",
+                args.worker_transport,
+                "--model",
+                args.model_name,
+                "--model-path",
+                args.model,
+                "--model-file-size",
+                str((snapshot.get("model") or {}).get("size_bytes") or (snapshot.get("model") or {}).get("size") or 0),
+                "--llama-server-path",
+                args.llama_server,
+                "--llama-server-version",
+                str(snapshot.get("runtime_version") or "unknown"),
+                "--ctx-size",
+                str(args.ctx_size),
+                "--cache-type-k",
+                args.cache_type_k,
+                "--cache-type-v",
+                args.cache_type_v,
+                "--mtp-enabled" if args.mtp_enabled else "--no-mtp-enabled",
+                "--spec-draft-model-path",
+                args.mtp_model if args.mtp_enabled else "none",
+                "--spec-draft-model-size",
+                str((snapshot.get("mtp_model") or {}).get("size_bytes") or (snapshot.get("mtp_model") or {}).get("size") or 0)
+                if args.mtp_enabled
+                else "0",
+                "--slot-id",
+                "0",
+            ]
+        )
     if args.router_auth:
         argv.extend(["--auth-token-file", paths["auth_token"]])
     elif args.allow_unauthenticated_lan:
@@ -616,11 +651,9 @@ def make_router_argv(args: argparse.Namespace, snapshot: dict[str, Any]) -> list
                 args.durable_blob_encryption_key_owner,
             ]
         )
-    if args.workers_file:
-        argv.extend(["--workers-file", paths["workers_file"]])
-    if args.worker_ssh_host:
+    if not args.workers_file and args.worker_ssh_host:
         argv.extend(["--worker-ssh-host", args.worker_ssh_host])
-    if args.worker_sidecar_url:
+    if not args.workers_file and args.worker_sidecar_url:
         argv.extend(["--worker-sidecar-url", args.worker_sidecar_url])
     if args.ssh_config:
         argv.extend(["--ssh-config", args.ssh_config])
@@ -645,8 +678,49 @@ def stop_owned_pid(host: str, pid_path: str, *, timeout: float = 90.0) -> dict[s
     return result
 
 
+def remote_set_gpu_dpm(host: str, level: str) -> dict[str, Any]:
+    level = str(level or "").strip()
+    if not level:
+        return {"skipped": True}
+    payload_text = json.dumps({"level": level}, sort_keys=True)
+    script = r'''
+import glob, json, os, subprocess, sys
+payload = json.loads(PAYLOAD_TEXT)
+level = payload["level"]
+paths = sorted(glob.glob("/sys/class/drm/card*/device/power_dpm_force_performance_level"))
+results = []
+for path in paths:
+    before = None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            before = fh.read().strip()
+    except OSError:
+        pass
+    if os.access(path, os.W_OK):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(level)
+    else:
+        proc = subprocess.run(
+            ["sudo", "-n", "tee", path],
+            input=level,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise SystemExit(f"failed to set {path}: {proc.stdout}")
+    with open(path, "r", encoding="utf-8") as fh:
+        after = fh.read().strip()
+    results.append({"path": path, "before": before, "after": after})
+print(json.dumps({"ok": True, "level": level, "results": results}, sort_keys=True))
+'''.replace("PAYLOAD_TEXT", repr(payload_text))
+    return remote_json(host, "python3 - <<'PY'\n" + script + "PY\n", timeout=30)
+
+
 def start_worker(args: argparse.Namespace) -> dict[str, Any]:
     paths = remote_paths(args)
+    gpu_dpm = remote_set_gpu_dpm(args.remote_host, args.gpu_dpm_force_performance_level)
     remote_prepare_run_dirs(args.remote_host, [paths["worker_slots"], paths["worker_logs"], paths["pid_dir"]])
     worker = remote_start_process(
         args.remote_host,
@@ -656,7 +730,7 @@ def start_worker(args: argparse.Namespace) -> dict[str, Any]:
     )
     save_pid(args.remote_host, paths["worker_pid"], int(worker["pid"]))
     ready = wait_remote_health(args.remote_host, args.worker_port, timeout_s=args.ready_timeout)
-    return {"start": worker, "ready": ready}
+    return {"gpu_dpm": gpu_dpm, "start": worker, "ready": ready}
 
 
 def start_sidecar(args: argparse.Namespace) -> dict[str, Any]:
@@ -1008,7 +1082,7 @@ def write_service_snapshot(path: Path, args: argparse.Namespace, status: dict[st
         f"- local tunnel option: ssh -N -L {args.router_port}:127.0.0.1:{args.router_port} {args.remote_host}",
         f"- OpenAI base URL via tunnel: http://127.0.0.1:{args.router_port}/v1",
         f"- LAN base URL if bound to 0.0.0.0: http://<router-lan-ip>:{args.router_port}/v1",
-        "- model: Step-3.7",
+        f"- model: {args.model_name}",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1035,7 +1109,7 @@ OpenAI chat pass-through:
 ```bash
 curl -fsS http://127.0.0.1:{args.router_port}/v1/chat/completions \\
   -H 'Content-Type: application/json' \\
-  -d '{{"model":"Step-3.7","messages":[{{"role":"user","content":"Reply with exactly: router chat ok"}}],"max_tokens":8,"temperature":0}}'
+  -d '{{"model":"{args.model_name}","messages":[{{"role":"user","content":"Reply with exactly: router chat ok"}}],"max_tokens":8,"temperature":0}}'
 ```
 
 OpenAI completion pass-through:
@@ -1043,7 +1117,7 @@ OpenAI completion pass-through:
 ```bash
 curl -fsS http://127.0.0.1:{args.router_port}/v1/completions \\
   -H 'Content-Type: application/json' \\
-  -d '{{"model":"Step-3.7","prompt":"Reply with exactly: router completion ok\\nAnswer:","max_tokens":8,"temperature":0}}'
+  -d '{{"model":"{args.model_name}","prompt":"Reply with exactly: router completion ok\\nAnswer:","max_tokens":8,"temperature":0}}'
 ```
 
 Cached suffix route uses the nonstandard `cache_router` extension. The router
@@ -1075,7 +1149,7 @@ def summarize_results_markdown(results: dict[str, Any]) -> str:
         f"- Worker bind: `127.0.0.1:{results.get('worker_port')}`",
         f"- Tunnel: `ssh -N -L {results.get('router_port')}:127.0.0.1:{results.get('router_port')} {results.get('remote_host')}`",
         f"- OpenAI base URL: `http://127.0.0.1:{results.get('router_port')}/v1`",
-        "- Model: `Step-3.7`",
+        f"- Model: `{results.get('model_name')}`",
         "",
         "## Cache Build Through Router",
         "",
@@ -1168,6 +1242,7 @@ def run_endpoint_test(args: argparse.Namespace) -> dict[str, Any]:
         "router_host": args.router_host,
         "router_port": args.router_port,
         "worker_port": args.worker_port,
+        "model_name": args.model_name,
         "remote_cache_root": args.remote_cache_root,
         "start": start_result,
         "status_before_tests": status_before,
@@ -1185,7 +1260,7 @@ def run_endpoint_test(args: argparse.Namespace) -> dict[str, Any]:
             results["tests"][name] = {"response": body, "wall_ms": wall_ms}
 
         chat_payload = {
-            "model": DEFAULT_MODEL_NAME,
+            "model": args.model_name,
             "messages": [{"role": "user", "content": "Reply with exactly: router chat ok"}],
             "max_tokens": 8,
             "temperature": 0,
@@ -1194,7 +1269,7 @@ def run_endpoint_test(args: argparse.Namespace) -> dict[str, Any]:
         results["tests"]["chat_passthrough"] = {"response": chat_body, "wall_ms": chat_ms}
 
         completion_payload = {
-            "model": DEFAULT_MODEL_NAME,
+            "model": args.model_name,
             "prompt": "Reply with exactly: router completion ok\nAnswer:",
             "max_tokens": 8,
             "temperature": 0,
@@ -1215,7 +1290,7 @@ def run_endpoint_test(args: argparse.Namespace) -> dict[str, Any]:
         }
 
         build_payload = {
-            "model": DEFAULT_MODEL_NAME,
+            "model": args.model_name,
             "prompt": "",
             "max_tokens": 1,
             "temperature": 0,
@@ -1236,7 +1311,7 @@ def run_endpoint_test(args: argparse.Namespace) -> dict[str, Any]:
         results["tests"]["worker_restart_local_miss"] = restart
 
         use_payload = {
-            "model": DEFAULT_MODEL_NAME,
+            "model": args.model_name,
             "prompt": suffix,
             "max_tokens": 16,
             "temperature": 0,
@@ -1343,6 +1418,7 @@ def parse_args() -> argparse.Namespace:
         p.add_argument("--strict-metadata-force-runtime", action=argparse.BooleanOptionalAction, default=True, help="Pass runtime-forced strict metadata derivation to the router daemon.")
         p.add_argument("--llama-server", default=DEFAULT_RUNTIME)
         p.add_argument("--model", default=DEFAULT_MODEL)
+        p.add_argument("--model-name", default=DEFAULT_MODEL_NAME, help="OpenAI model ID / llama-server alias advertised by this worker.")
         p.add_argument(
             "--mtp-enabled",
             action=argparse.BooleanOptionalAction,
@@ -1352,6 +1428,11 @@ def parse_args() -> argparse.Namespace:
         p.add_argument("--mtp-model", default=DEFAULT_MTP_MODEL)
         p.add_argument("--mmproj-model", default=DEFAULT_MMPROJ_MODEL)
         p.add_argument("--ctx-size", type=int, default=DEFAULT_CTX_SIZE)
+        p.add_argument("--cache-type-k", default="q8_0")
+        p.add_argument("--cache-type-v", default="q8_0")
+        p.add_argument("--threads", type=int, default=16)
+        p.add_argument("--threads-http", type=int, default=4)
+        p.add_argument("--gpu-dpm-force-performance-level", default="")
         p.add_argument("--cache-ram-mib", type=int, default=0)
         p.add_argument("--ctx-checkpoints", type=int, default=0)
         p.add_argument("--spec-draft-n-max", type=int, default=2)

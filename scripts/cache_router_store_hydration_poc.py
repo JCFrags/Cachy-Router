@@ -261,8 +261,11 @@ def remote_start_process(host: str, argv: list[str], log_path: str, *, timeout: 
     script = r'''
 import json, os, subprocess, sys
 payload = json.loads(PAYLOAD_TEXT)
-argv = payload["argv"]
-log_path = payload["log_path"]
+argv = [
+    os.path.expanduser(str(part)) if str(part).startswith("~") else str(part)
+    for part in payload["argv"]
+]
+log_path = os.path.expanduser(payload["log_path"])
 os.makedirs(os.path.dirname(log_path), exist_ok=True)
 fh = open(log_path, "ab", buffering=0)
 proc = subprocess.Popen(argv, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
@@ -294,19 +297,16 @@ fi
 
 
 def remote_prepare_run_dirs(host: str, paths: list[str]) -> dict[str, Any]:
-    quoted = "\n".join(paths)
-    script = f'''
-set -euo pipefail
-while IFS= read -r p; do
-  [ -n "$p" ] && mkdir -p "$p"
-done <<'EOF'
-{quoted}
-EOF
-python3 - <<'PY'
-import json
-print(json.dumps({{"ok": True}}))
-PY
-'''
+    payload_text = json.dumps({"paths": paths}, sort_keys=True)
+    script = r'''
+import json, os
+payload = json.loads(PAYLOAD_TEXT)
+for path in payload["paths"]:
+    if path:
+        os.makedirs(os.path.expanduser(path), exist_ok=True)
+print(json.dumps({"ok": True}))
+'''.replace("PAYLOAD_TEXT", repr(payload_text))
+    script = "python3 - <<'PY'\n" + script + "PY\n"
     return remote_json(host, script, timeout=60)
 
 
@@ -593,9 +593,9 @@ def temp_server_argv(args: argparse.Namespace, *, worker_id: str, slot_dir: str)
         "-ub",
         "2048",
         "-ctk",
-        "q8_0",
+        str(getattr(args, "cache_type_k", "q8_0")),
         "-ctv",
-        "q8_0",
+        str(getattr(args, "cache_type_v", "q8_0")),
         "--no-mmap",
         "--direct-io",
         "-np",
@@ -605,9 +605,9 @@ def temp_server_argv(args: argparse.Namespace, *, worker_id: str, slot_dir: str)
         "--timeout",
         "200000",
         "--threads",
-        "16",
+        str(getattr(args, "threads", 16)),
         "--threads-http",
-        "4",
+        str(getattr(args, "threads_http", 4)),
         "--metrics",
         "--slots",
         "--slot-save-path",

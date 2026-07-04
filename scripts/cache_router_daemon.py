@@ -1314,16 +1314,22 @@ def slot_availability(slots: Any, slot_id: int) -> dict[str, Any]:
     is_processing = selected.get("is_processing")
     next_tokens = selected.get("next_token") if isinstance(selected.get("next_token"), list) else []
     has_next = any(isinstance(row, dict) and row.get("has_next_token") is True for row in next_tokens)
+    stalled_next_token = is_processing is False and has_next
     busy = is_processing is True or has_next
     return {
         "available": not busy,
-        "busy_score": 2 if busy else 0,
-        "reason": "busy" if busy else "idle",
+        "busy_score": 100 if stalled_next_token else 2 if busy else 0,
+        "reason": "stalled_next_token" if stalled_next_token else "busy" if busy else "idle",
         "is_processing": is_processing,
         "has_next_token": has_next,
+        "poisoned": stalled_next_token,
         "n_prompt_tokens": selected.get("n_prompt_tokens"),
         "n_prompt_tokens_processed": selected.get("n_prompt_tokens_processed"),
     }
+
+
+def routable_availability(availability: dict[str, Any]) -> bool:
+    return availability.get("poisoned") is not True
 
 
 def row_value(row: dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -1545,8 +1551,10 @@ def worker_metadata_from_row(row: dict[str, Any], args: argparse.Namespace) -> d
         model_path = str(legacy_model)
     model_path = model_path or args.model_path
 
-    spec_path = str(row_value(row, "spec_draft_model_path", "mtp_model", "draft_model_path", default=args.spec_draft_model_path))
     mtp_enabled = bool_value(row_value(row, "mtp_enabled", default=args.mtp_enabled), args.mtp_enabled)
+    spec_path = str(row_value(row, "spec_draft_model_path", "mtp_model", "draft_model_path", default=args.spec_draft_model_path))
+    if not mtp_enabled:
+        spec_path = "none"
     return {
         "model": model,
         "model_identity": str(row_value(row, "model_identity", "model_hash", default=model_path)),
@@ -1579,12 +1587,14 @@ def worker_metadata_from_row(row: dict[str, Any], args: argparse.Namespace) -> d
         "reasoning_format": str(row_value(row, "reasoning_format", default=args.reasoning_format)),
         "jinja_template_mode": str(row_value(row, "jinja_template_mode", default=args.jinja_template_mode)),
         "mtp_enabled": mtp_enabled,
-        "spec_draft_model_identity": str(row_value(row, "spec_draft_model_identity", "mtp_model_identity", "spec_draft_model_hash", default=spec_path)),
+        "spec_draft_model_identity": str(row_value(row, "spec_draft_model_identity", "mtp_model_identity", "spec_draft_model_hash", default=spec_path) if mtp_enabled else "none"),
         "spec_draft_model_path": spec_path,
         "spec_draft_model_size": int_value(
             row_value(row, "spec_draft_model_size", "mtp_model_size", "mtp_model_size_bytes", default=args.spec_draft_model_size),
             args.spec_draft_model_size,
-        ),
+        )
+        if mtp_enabled
+        else 0,
         "spec_draft_model_hash": str(row_value(row, "spec_draft_model_hash", "mtp_model_hash", default=args.spec_draft_model_hash if mtp_enabled else "none")),
         "spec_draft_config": str(row_value(row, "spec_draft_config", default=args.spec_draft_config if mtp_enabled else "none")),
         "n_parallel": int_value(row_value(row, "n_parallel", default=args.n_parallel), args.n_parallel),
@@ -2286,6 +2296,25 @@ class CacheRouterState:
                 availability = worker.availability()
                 active_requests = self.worker_active_count(worker.worker_id)
                 queue_depth = self.worker_queue_depth(worker.worker_id)
+                if not routable_availability(availability):
+                    last_readiness = {**readiness, "availability": availability}
+                    trace_rows.append(
+                        {
+                            "worker_id": worker.worker_id,
+                            "eligible": False,
+                            "readiness_state": readiness.get("state"),
+                            "availability_reason": availability.get("reason"),
+                            "busy_score": int(availability.get("busy_score", 1)),
+                            "active_requests": active_requests,
+                            "queue_depth": queue_depth,
+                            "queue_capacity": self.worker_capacity(worker),
+                            "preferred": bool(preferred_worker_id and worker.worker_id == preferred_worker_id),
+                            "hot_residency": bool(prefer_residency and prefer_residency.get(worker.worker_id) is True),
+                            "order_index": ordered_index.get(worker.worker_id),
+                            "rank": None,
+                        }
+                    )
+                    continue
                 rank = self.rank_worker(worker, availability, ordered_index, preferred_worker_id, prefer_residency, active_requests, queue_depth)
                 healthy.append((worker, availability, rank))
                 trace_rows.append(
@@ -2367,7 +2396,11 @@ class CacheRouterState:
         return sorted(model for model in models if model)
 
     def ready_model_ids(self) -> list[str]:
-        models = {worker.model for worker in self.workers_snapshot() if worker.model and self.worker_readiness(worker, include_sidecar=False).get("ok")}
+        models = {
+            worker.model
+            for worker in self.workers_snapshot()
+            if worker.model and self.worker_readiness(worker, include_sidecar=False).get("ok") and routable_availability(worker.availability())
+        }
         return sorted(models)
 
     def has_model(self, model: str) -> bool:
@@ -4595,7 +4628,12 @@ class RouterHandler(BaseHTTPRequestHandler):
                     summaries = self.state.worker_summaries(include_slots=False)
                     healthy = sum(1 for row in summaries if row.get("health", {}).get("ok"))
                     ready = sum(1 for row in summaries if row.get("readiness", {}).get("ok"))
-                    body["status"] = "ok" if ready else "degraded"
+                    route_ready = sum(
+                        1
+                        for row in summaries
+                        if row.get("readiness", {}).get("ok") and routable_availability(row.get("availability", {}))
+                    )
+                    body["status"] = "ok" if route_ready else "degraded"
                     body.update(
                         {
                             "router": {"pid": os.getpid(), "bind": self.state.args.host, "port": self.state.args.port, "security": security},
@@ -4603,6 +4641,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                             "worker_count": len(summaries),
                             "healthy_workers": healthy,
                             "ready_workers": ready,
+                            "route_ready_workers": route_ready,
                             "cache_root": str(self.state.cache_root),
                         }
                     )
@@ -4659,10 +4698,15 @@ class RouterHandler(BaseHTTPRequestHandler):
                 workers = self.state.worker_summaries(include_slots=False)
                 healthy = sum(1 for row in workers if row.get("health", {}).get("ok"))
                 ready = sum(1 for row in workers if row.get("readiness", {}).get("ok"))
+                route_ready = sum(
+                    1
+                    for row in workers
+                    if row.get("readiness", {}).get("ok") and routable_availability(row.get("availability", {}))
+                )
                 self.send_json(
                     200,
                     {
-                        "status": "ok",
+                        "status": "ok" if route_ready else "degraded",
                         "router": {
                             "pid": os.getpid(),
                             "bind": self.state.args.host,
@@ -4678,6 +4722,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                         "worker_count": len(workers),
                         "healthy_workers": healthy,
                         "ready_workers": ready,
+                        "route_ready_workers": route_ready,
                         "cache_root": str(self.state.cache_root),
                         "registry_entries": len(registry.get("entries", [])),
                         "inventory": self.state.inventory_status(),
@@ -4685,6 +4730,11 @@ class RouterHandler(BaseHTTPRequestHandler):
                 )
             elif self.path == "/router/workers":
                 workers = self.state.worker_summaries()
+                route_ready = sum(
+                    1
+                    for row in workers
+                    if row.get("readiness", {}).get("ok") and routable_availability(row.get("availability", {}))
+                )
                 self.send_json(
                     200,
                     {
@@ -4692,6 +4742,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                         "count": len(workers),
                         "healthy": sum(1 for row in workers if row.get("health", {}).get("ok")),
                         "ready": sum(1 for row in workers if row.get("readiness", {}).get("ok")),
+                        "route_ready": route_ready,
                     },
                 )
             elif self.path == "/router/cache":
@@ -5207,8 +5258,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ssh-config", default="")
     parser.add_argument("--ssh-extra-args", default="")
     parser.add_argument("--scp-extra-args", default="")
-    parser.add_argument("--model", default="Step-3.7")
-    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--model", default="model")
+    parser.add_argument("--model-path", default="")
     parser.add_argument("--model-file-size", type=int, default=0)
     parser.add_argument("--model-architecture", default="not_captured")
     parser.add_argument("--derive-strict-metadata", action=argparse.BooleanOptionalAction, default=True, help="Fill missing strict cache compatibility fields from worker runtime APIs such as /v1/models, /props, and /tokenize.")
@@ -5221,7 +5272,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tools-schema-hash", default="not_captured")
     parser.add_argument("--system-prompt-hash", default="not_captured")
     parser.add_argument("--special-token-policy", default="not_captured")
-    parser.add_argument("--llama-server-path", required=True)
+    parser.add_argument("--llama-server-path", default="")
     parser.add_argument("--llama-server-version", default="unknown")
     parser.add_argument("--llama-cpp-source-commit", default="not_captured")
     parser.add_argument("--llama-cpp-cache-abi-version", default="not_captured")
@@ -5254,8 +5305,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--queue-limit-per-worker", type=int, default=0, help="Maximum queued normal proxy requests per worker. Zero disables router-side queueing/backpressure.")
     parser.add_argument("--queue-wait-timeout", type=float, default=0.0, help="Maximum seconds a queued normal proxy request may wait for a worker slot before a bounded 503 response.")
     args = parser.parse_args()
-    if not args.workers_file and not args.worker_slot_dir:
-        parser.error("--worker-slot-dir is required unless --workers-file is provided")
+    if not args.workers_file:
+        if not args.worker_slot_dir:
+            parser.error("--worker-slot-dir is required unless --workers-file is provided")
+        if not args.model_path:
+            parser.error("--model-path is required unless --workers-file is provided")
+        if not args.llama_server_path:
+            parser.error("--llama-server-path is required unless --workers-file is provided")
     if args.production_mode:
         if args.allow_unauthenticated_lan:
             parser.error("--production-mode cannot be combined with --allow-unauthenticated-lan")

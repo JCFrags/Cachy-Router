@@ -52,6 +52,7 @@ class FakeWorkerState:
         self.stream_delay_seconds = 0.0
         self.stream_finished = False
         self.slot_is_processing = False
+        self.slot_has_next_token = False
         self.fail_restore = False
         self.tokenize_calls = 0
         self.llama_completion_calls = 0
@@ -138,8 +139,11 @@ class FakeWorkerHandler(BaseHTTPRequestHandler):
                         {
                             "id": 0,
                             "is_processing": self.fake_state.slot_is_processing,
-                            "n_prompt_tokens": 128 if self.fake_state.slot_is_processing else 0,
-                            "n_prompt_tokens_processed": 64 if self.fake_state.slot_is_processing else 0,
+                            "next_token": [{"has_next_token": True, "n_decoded": 0, "n_remain": -1}]
+                            if self.fake_state.slot_has_next_token
+                            else [],
+                            "n_prompt_tokens": 128 if self.fake_state.slot_is_processing or self.fake_state.slot_has_next_token else 0,
+                            "n_prompt_tokens_processed": 64 if self.fake_state.slot_is_processing else 128 if self.fake_state.slot_has_next_token else 0,
                         }
                     ]
                 },
@@ -2259,6 +2263,48 @@ def main() -> int:
             assert_true(len(fake_backup_state.requests) == backup_count_before + 1, "idle backup should receive busy/idle request")
             fake_state.slot_is_processing = False
 
+            fake_state.slot_has_next_token = True
+            fake_backup_state.slot_has_next_token = False
+            main_count_before = len(fake_state.requests)
+            backup_count_before = len(fake_backup_state.requests)
+            status, headers, raw = request(
+                "POST",
+                base + "/v1/completions",
+                headers=auth,
+                body={"model": "fake-model", "prompt": "hello", "max_tokens": 1},
+            )
+            assert_true(status == 200, "poisoned stalled-next-token worker should be skipped when backup is ready")
+            assert_true(headers.get("x-cache-router-worker") == "worker-backup", "stalled worker should not be selected")
+            assert_true(json.loads(raw.decode("utf-8"))["choices"][0]["text"] == "ok", "stalled-worker fallback response should come from backup")
+            assert_true(len(fake_state.requests) == main_count_before, "stalled worker should not receive forwarded completion")
+            assert_true(len(fake_backup_state.requests) == backup_count_before + 1, "backup should receive stalled-worker fallback request")
+            status, _, raw = request("GET", base + "/router/workers", headers=auth)
+            workers_body = json.loads(raw.decode("utf-8"))
+            stalled_worker = next(row for row in workers_body.get("workers", []) if row.get("worker_id") == "worker-main")
+            assert_true(status == 200, "/router/workers should still report poisoned workers for inspection")
+            assert_true(stalled_worker.get("availability", {}).get("reason") == "stalled_next_token", "poisoned worker should expose stalled-next-token reason")
+            assert_true(stalled_worker.get("availability", {}).get("poisoned") is True, "poisoned worker should be marked explicitly")
+            assert_true(workers_body.get("route_ready") == 1, "/router/workers should count only non-poisoned route-ready workers")
+
+            fake_backup_state.models_ready = False
+            forwarded_count = total_worker_requests([fake_state, fake_backup_state])
+            status, _, raw = request("GET", base + "/v1/models", headers=auth)
+            body = json.loads(raw.decode("utf-8"))
+            assert_true(status == 503, "/v1/models should fail when the only model-ready worker is poisoned")
+            assert_true(body.get("error", {}).get("type") == "service_unavailable", "poisoned-only model response should be service_unavailable")
+            status, _, raw = request(
+                "POST",
+                base + "/v1/completions",
+                headers=auth,
+                body={"model": "fake-model", "prompt": "hello", "max_tokens": 1},
+            )
+            body = json.loads(raw.decode("utf-8"))
+            assert_true(status == 503, "poisoned-only worker should not receive user traffic")
+            assert_true(body.get("error", {}).get("type") == "service_unavailable", "poisoned-only route failure should be service_unavailable")
+            assert_true(total_worker_requests([fake_state, fake_backup_state]) == forwarded_count, "poisoned-only route should not forward completions")
+            fake_state.slot_has_next_token = False
+            fake_backup_state.models_ready = True
+
             incompatible_count_before = len(fake_incompatible_state.requests)
             status, headers, raw = request(
                 "POST",
@@ -2678,8 +2724,8 @@ def main() -> int:
             assert_true(status == 200, "authorized metrics request after 503 should succeed")
             assert_true('cachy_router_requests_total{method="POST",path="/v1/completions",status="404"} 2' in metrics, "metrics should count model and worker 404s")
             assert_true('cachy_router_errors_total{method="POST",path="/v1/completions",status="404"} 2' in metrics, "metrics should count model and worker errors")
-            assert_true('cachy_router_requests_total{method="POST",path="/v1/completions",status="503"} 4' in metrics, "metrics should count no-worker 503 responses")
-            assert_true('cachy_router_errors_total{method="POST",path="/v1/completions",status="503"} 4' in metrics, "metrics should count no-worker errors")
+            assert_true('cachy_router_requests_total{method="POST",path="/v1/completions",status="503"} 5' in metrics, "metrics should count no-worker 503 responses")
+            assert_true('cachy_router_errors_total{method="POST",path="/v1/completions",status="503"} 5' in metrics, "metrics should count no-worker errors")
 
             fake_state.healthy = True
             fake_state.models_ready = True
